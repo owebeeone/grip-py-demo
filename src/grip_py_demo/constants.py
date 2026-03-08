@@ -1,0 +1,37 @@
+"""Static demo constants."""
+
+from __future__ import annotations
+
+LOCATION_OPTIONS: tuple[str, ...] = (
+    "Sydney",
+    "Melbourne",
+    "San Jose",
+    "Palo Alto",
+    "Paris",
+    "Bella Vista, NSW",
+    "Darwin",
+    "Adelaide",
+    "Perth",
+    "Hobart",
+    "Brisbane",
+    "Gold Coast",
+    "Newcastle",
+    "Canberra",
+    "Wollongong",
+    "Cairns",
+    "Toowoomba",
+    "Sunshine Coast",
+    "Mackay",
+    "Townsville",
+    "Rockhampton",
+    "Bundaberg",
+    "Gladstone",
+    "Hervey Bay",
+    "Maryborough",
+    "Bunbury",
+    "Port Macquarie",
+    "Port Douglas",
+    "Port Lincoln",
+    "Port Pirie",
+    "Port Augusta",
+)

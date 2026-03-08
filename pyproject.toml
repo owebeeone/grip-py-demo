@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "grip-py-demo"
+version = "0.1.0"
+description = "PySide6 demo app for grip-py"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "grip-py",
+  "PySide6>=6.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0",
+]
+
+[project.scripts]
+grip-py-demo = "grip_py_demo.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/grip_py_demo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
