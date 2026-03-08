@@ -234,7 +234,9 @@ class DemoRuntime:
         self.clock_tap.tick(seconds)
 
     def tick_weather(self, step: int = 1) -> None:
-        # Mock weather changes over time; live meteo updates on param changes + cache.
+        # Poll asynchronous meteo taps and advance deterministic mock weather.
+        self.location_to_geo_tap.produce()
+        self.meteo_weather_tap.produce()
         self.mock_weather_tap.tick(step)
 
     def tick(self) -> None:

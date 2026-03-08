@@ -2,29 +2,34 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
+import queue
+import threading
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
-from urllib.request import urlopen
 
+import httpx
 from grip_py import BaseTap, GripContext
 
 from .grips import WeatherGrips
 
 
-def fetch_geocode_json(location: str, *, timeout_s: float = 5.0) -> dict[str, Any]:
+async def fetch_geocode_json_async(location: str, *, timeout_s: float = 5.0) -> dict[str, Any]:
     """Fetch geocoding payload from Open-Meteo."""
     url = (
         "https://geocoding-api.open-meteo.com/v1/search"
         f"?name={quote(location)}&count=1&language=en&format=json"
     )
-    with urlopen(url, timeout=timeout_s) as response:
-        return json.loads(response.read().decode("utf-8"))
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
 
 
-def fetch_weather_json(lat: float, lng: float, *, timeout_s: float = 7.0) -> dict[str, Any]:
+async def fetch_weather_json_async(lat: float, lng: float, *, timeout_s: float = 7.0) -> dict[str, Any]:
     """Fetch weather payload from Open-Meteo."""
     url = (
         "https://api.open-meteo.com/v1/forecast"
@@ -32,8 +37,10 @@ def fetch_weather_json(lat: float, lng: float, *, timeout_s: float = 7.0) -> dic
         "&current_weather=true"
         "&hourly=relativehumidity_2m,precipitation_probability,cloudcover,uv_index"
     )
-    with urlopen(url, timeout=timeout_s) as response:
-        return json.loads(response.read().decode("utf-8"))
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
 
 
 def parse_geocode_payload(
@@ -180,6 +187,32 @@ class _CacheEntry:
     expires_at: float
 
 
+class _AsyncWorker:
+    """Single background asyncio loop for non-blocking network fetches."""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="grip-py-demo-asyncio",
+            daemon=True,
+        )
+        self._thread.start()
+        self._ready.wait(timeout=2.0)
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        self._loop.run_forever()
+
+    def submit(self, coroutine):
+        return asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+
+
+_ASYNC_WORKER = _AsyncWorker()
+
+
 class LocationToGeoTap(BaseTap):
     """Resolve `Weather.Location` into geo coordinates + display label."""
 
@@ -195,8 +228,20 @@ class LocationToGeoTap(BaseTap):
         self._grips = weather_grips
         self._cache_ttl_s = cache_ttl_s
         self._cache: dict[str, _CacheEntry] = {}
+        self._worker = _ASYNC_WORKER
+        self._inflight: dict[str, Future[tuple[float | None, float | None, str]]] = {}
+        self._completed: queue.SimpleQueue[tuple[str, float | None, float | None, str]] = (
+            queue.SimpleQueue()
+        )
+
+    def on_detach(self) -> None:
+        for future in tuple(self._inflight.values()):
+            future.cancel()
+        self._inflight.clear()
+        super().on_detach()
 
     def produce(self, *, dest_context: GripContext | None = None) -> None:
+        self._drain_completed_fetches()
         if dest_context is not None:
             self.publish(self._updates_for(dest_context), dest_context=dest_context)
             return
@@ -231,22 +276,51 @@ class LocationToGeoTap(BaseTap):
                 self._grips.GEO_LABEL: data["label"],
             }
 
-        try:
-            payload = fetch_geocode_json(location)
-            lat, lng, label = parse_geocode_payload(payload, fallback_label=location)
-        except Exception:
-            lat, lng, label = None, None, location
-
-        self._cache[key] = _CacheEntry(
-            value={"lat": lat, "lng": lng, "label": label},
-            expires_at=now + self._cache_ttl_s,
-        )
+        if key not in self._inflight:
+            self._start_fetch(key, location)
+            if cached is not None:
+                stale = cached.value
+                return {
+                    self._grips.GEO_LAT: stale["lat"],
+                    self._grips.GEO_LNG: stale["lng"],
+                    self._grips.GEO_LABEL: stale["label"],
+                }
 
         return {
-            self._grips.GEO_LAT: lat,
-            self._grips.GEO_LNG: lng,
-            self._grips.GEO_LABEL: label,
+            self._grips.GEO_LAT: None,
+            self._grips.GEO_LNG: None,
+            self._grips.GEO_LABEL: location,
         }
+
+    def _start_fetch(self, key: str, location: str) -> None:
+        future = self._worker.submit(self._fetch_and_parse_geocode(location))
+        self._inflight[key] = future
+
+        def on_done(done: Future[tuple[float | None, float | None, str]]) -> None:
+            try:
+                lat, lng, label = done.result()
+            except Exception:
+                lat, lng, label = None, None, location
+            self._completed.put((key, lat, lng, label))
+
+        future.add_done_callback(on_done)
+
+    async def _fetch_and_parse_geocode(self, location: str) -> tuple[float | None, float | None, str]:
+        payload = await fetch_geocode_json_async(location)
+        return parse_geocode_payload(payload, fallback_label=location)
+
+    def _drain_completed_fetches(self) -> None:
+        now = time.time()
+        while True:
+            try:
+                key, lat, lng, label = self._completed.get_nowait()
+            except queue.Empty:
+                break
+            self._inflight.pop(key, None)
+            self._cache[key] = _CacheEntry(
+                value={"lat": lat, "lng": lng, "label": label},
+                expires_at=now + self._cache_ttl_s,
+            )
 
 
 class OpenMeteoWeatherTap(BaseTap):
@@ -268,8 +342,18 @@ class OpenMeteoWeatherTap(BaseTap):
         self._grips = weather_grips
         self._cache_ttl_s = cache_ttl_s
         self._cache: dict[str, _CacheEntry] = {}
+        self._worker = _ASYNC_WORKER
+        self._inflight: dict[str, Future[dict[str, Any]]] = {}
+        self._completed: queue.SimpleQueue[tuple[str, dict[str, Any]]] = queue.SimpleQueue()
+
+    def on_detach(self) -> None:
+        for future in tuple(self._inflight.values()):
+            future.cancel()
+        self._inflight.clear()
+        super().on_detach()
 
     def produce(self, *, dest_context: GripContext | None = None) -> None:
+        self._drain_completed_fetches()
         if dest_context is not None:
             self.publish(self._updates_for(dest_context), dest_context=dest_context)
             return
@@ -294,20 +378,9 @@ class OpenMeteoWeatherTap(BaseTap):
         if cached is not None and cached.expires_at > now:
             mapped = cached.value
         else:
-            try:
-                payload = fetch_weather_json(lat, lng)
-                mapped = parse_weather_payload(payload)
-            except Exception:
-                mapped = {
-                    "temp_c": None,
-                    "humidity_pct": None,
-                    "wind_speed_kph": None,
-                    "wind_dir": "",
-                    "rain_pct": None,
-                    "sunny_pct": None,
-                    "uv_index": None,
-                }
-            self._cache[key] = _CacheEntry(value=mapped, expires_at=now + self._cache_ttl_s)
+            if key not in self._inflight:
+                self._start_fetch(key, lat, lng)
+            mapped = cached.value if cached is not None else _weather_payload_defaults()
 
         return {
             self._grips.WEATHER_TEMP_C: mapped.get("temp_c"),
@@ -319,14 +392,54 @@ class OpenMeteoWeatherTap(BaseTap):
             self._grips.WEATHER_UV_INDEX: mapped.get("uv_index"),
         }
 
+    def _start_fetch(self, key: str, lat: float, lng: float) -> None:
+        future = self._worker.submit(self._fetch_and_parse_weather(lat, lng))
+        self._inflight[key] = future
+
+        def on_done(done: Future[dict[str, Any]]) -> None:
+            try:
+                mapped = done.result()
+            except Exception:
+                mapped = _weather_payload_defaults()
+            self._completed.put((key, mapped))
+
+        future.add_done_callback(on_done)
+
+    async def _fetch_and_parse_weather(self, lat: float, lng: float) -> dict[str, Any]:
+        payload = await fetch_weather_json_async(lat, lng)
+        return parse_weather_payload(payload)
+
+    def _drain_completed_fetches(self) -> None:
+        now = time.time()
+        while True:
+            try:
+                key, mapped = self._completed.get_nowait()
+            except queue.Empty:
+                break
+            self._inflight.pop(key, None)
+            self._cache[key] = _CacheEntry(value=mapped, expires_at=now + self._cache_ttl_s)
+
 
 def _weather_defaults(grips: type[WeatherGrips]) -> dict[Any, Any]:
+    mapped = _weather_payload_defaults()
     return {
-        grips.WEATHER_TEMP_C: None,
-        grips.WEATHER_HUMIDITY: None,
-        grips.WEATHER_WIND_SPEED: None,
-        grips.WEATHER_WIND_DIR: "",
-        grips.WEATHER_RAIN_PCT: None,
-        grips.WEATHER_SUNNY_PCT: None,
-        grips.WEATHER_UV_INDEX: None,
+        grips.WEATHER_TEMP_C: mapped["temp_c"],
+        grips.WEATHER_HUMIDITY: mapped["humidity_pct"],
+        grips.WEATHER_WIND_SPEED: mapped["wind_speed_kph"],
+        grips.WEATHER_WIND_DIR: mapped["wind_dir"],
+        grips.WEATHER_RAIN_PCT: mapped["rain_pct"],
+        grips.WEATHER_SUNNY_PCT: mapped["sunny_pct"],
+        grips.WEATHER_UV_INDEX: mapped["uv_index"],
+    }
+
+
+def _weather_payload_defaults() -> dict[str, Any]:
+    return {
+        "temp_c": None,
+        "humidity_pct": None,
+        "wind_speed_kph": None,
+        "wind_dir": "",
+        "rain_pct": None,
+        "sunny_pct": None,
+        "uv_index": None,
     }

@@ -1,3 +1,5 @@
+import time
+
 from grip_py_demo.demo_runtime import DemoRuntime
 from grip_py_demo.grips import DemoGrips, REGISTRY, WeatherGrips
 
@@ -84,7 +86,7 @@ def test_weather_provider_switch_and_location_updates() -> None:
 def test_default_meteo_provider_uses_real_taps_with_http_stubs(monkeypatch) -> None:
     from grip_py_demo import openmeteo_taps
 
-    def fake_geocode(_location: str, *, timeout_s: float = 5.0):
+    async def fake_geocode(_location: str, *, timeout_s: float = 5.0):
         _ = timeout_s
         return {
             "results": [
@@ -96,7 +98,7 @@ def test_default_meteo_provider_uses_real_taps_with_http_stubs(monkeypatch) -> N
             ]
         }
 
-    def fake_weather(_lat: float, _lng: float, *, timeout_s: float = 7.0):
+    async def fake_weather(_lat: float, _lng: float, *, timeout_s: float = 7.0):
         _ = timeout_s
         return {
             "current_weather": {
@@ -114,11 +116,16 @@ def test_default_meteo_provider_uses_real_taps_with_http_stubs(monkeypatch) -> N
             },
         }
 
-    monkeypatch.setattr(openmeteo_taps, "fetch_geocode_json", fake_geocode)
-    monkeypatch.setattr(openmeteo_taps, "fetch_weather_json", fake_weather)
+    monkeypatch.setattr(openmeteo_taps, "fetch_geocode_json_async", fake_geocode)
+    monkeypatch.setattr(openmeteo_taps, "fetch_weather_json_async", fake_weather)
 
     runtime = DemoRuntime()
+    deadline = time.time() + 1.0
     snapshot_a = runtime.get_weather_snapshot("A")
+    while snapshot_a.temp_c is None and time.time() < deadline:
+        runtime.tick_weather()
+        time.sleep(0.01)
+        snapshot_a = runtime.get_weather_snapshot("A")
 
     assert runtime.get_weather_provider() == "meteo"
     assert snapshot_a.location_label == "Sydney"
@@ -136,3 +143,49 @@ def test_read_uses_cached_drip_without_requery(monkeypatch) -> None:
 
     monkeypatch.setattr(type(runtime.grok), "query", fail_query)
     assert runtime._read(runtime.grips.COUNT) == cached.get()
+
+
+def test_meteo_reads_do_not_block_on_slow_network(monkeypatch) -> None:
+    from grip_py_demo import openmeteo_taps
+
+    async def slow_geocode(_location: str, *, timeout_s: float = 5.0):
+        _ = timeout_s
+        time.sleep(0.2)
+        return {
+            "results": [
+                {
+                    "latitude": -33.86,
+                    "longitude": 151.20,
+                    "name": "Sydney",
+                }
+            ]
+        }
+
+    async def slow_weather(_lat: float, _lng: float, *, timeout_s: float = 7.0):
+        _ = timeout_s
+        time.sleep(0.2)
+        return {
+            "current_weather": {
+                "time": "2026-03-09T05:00",
+                "temperature": 21.2,
+                "windspeed": 13.2,
+                "winddirection": 92,
+            },
+            "hourly": {
+                "time": ["2026-03-09T04:00", "2026-03-09T05:00"],
+                "relativehumidity_2m": [70, 68],
+                "precipitation_probability": [20, 40],
+                "cloudcover": [30, 60],
+                "uv_index": [2.1, 5.4],
+            },
+        }
+
+    monkeypatch.setattr(openmeteo_taps, "fetch_geocode_json_async", slow_geocode)
+    monkeypatch.setattr(openmeteo_taps, "fetch_weather_json_async", slow_weather)
+
+    runtime = DemoRuntime()
+    start = time.perf_counter()
+    snapshot = runtime.get_weather_snapshot("A")
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.1
+    assert snapshot.location_label in {"Sydney", ""}

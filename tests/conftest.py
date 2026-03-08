@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 def _stub_openmeteo_http(monkeypatch: pytest.MonkeyPatch) -> None:
     from grip_py_demo import openmeteo_taps
 
-    def fake_geocode(location: str, *, timeout_s: float = 5.0):
+    async def fake_geocode(location: str, *, timeout_s: float = 5.0):
         _ = timeout_s
         by_name = {
             "sydney": (-33.8688, 151.2093, "Sydney"),
@@ -27,7 +27,7 @@ def _stub_openmeteo_http(monkeypatch: pytest.MonkeyPatch) -> None:
         lat, lng, label = found
         return {"results": [{"latitude": lat, "longitude": lng, "name": label}]}
 
-    def fake_weather(lat: float, lng: float, *, timeout_s: float = 7.0):
+    async def fake_weather(lat: float, lng: float, *, timeout_s: float = 7.0):
         _ = timeout_s
         base = abs(int(round(lat * 10))) + abs(int(round(lng * 10)))
         return {
@@ -46,5 +46,5 @@ def _stub_openmeteo_http(monkeypatch: pytest.MonkeyPatch) -> None:
             },
         }
 
-    monkeypatch.setattr(openmeteo_taps, "fetch_geocode_json", fake_geocode)
-    monkeypatch.setattr(openmeteo_taps, "fetch_weather_json", fake_weather)
+    monkeypatch.setattr(openmeteo_taps, "fetch_geocode_json_async", fake_geocode)
+    monkeypatch.setattr(openmeteo_taps, "fetch_weather_json_async", fake_weather)
