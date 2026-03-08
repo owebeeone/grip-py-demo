@@ -7,18 +7,18 @@ from datetime import datetime
 from typing import Any
 
 from grip_py import (
+    Drip,
     GripContext,
-    GripRegistry,
     Grok,
-    Query,
     QueryBinding,
     TapMatcher,
     create_atom_value_tap,
-    use_grip,
+    with_one_of,
 )
 
 from .constants import LOCATION_OPTIONS
-from .grips import DemoGrips, ProviderName, TabName, WeatherGrips, define_demo_grips, define_weather_grips
+from .grips import DemoGrips, ProviderName, REGISTRY, TabName, WeatherGrips
+from .openmeteo_taps import LocationToGeoTap, OpenMeteoWeatherTap
 from .taps import CalculatorTap, ClockTap, FormulaWeatherTap
 
 
@@ -41,26 +41,28 @@ class DemoRuntime:
     location_options = LOCATION_OPTIONS
 
     def __init__(self, *, initial_time: datetime | None = None) -> None:
-        self.registry = GripRegistry()
-        self.grips: DemoGrips = define_demo_grips(self.registry)
-        self.weather_grips: WeatherGrips = define_weather_grips(self.registry)
+        self.registry = REGISTRY
+        self.grips = DemoGrips
+        self.weather_grips = WeatherGrips
         self.grok = Grok(self.registry)
+        self._drips: dict[tuple[str, str], Drip[Any]] = {}
 
         self.main_context = self.grok.main_presentation_context
 
         self.clock_tap = ClockTap(self.grips, initial_time=initial_time)
-        self.count_tap = create_atom_value_tap(self.grips.count, initial=1)
-        self.tab_tap = create_atom_value_tap(self.grips.current_tab, initial="clock")
-        self.page_size_tap = create_atom_value_tap(self.grips.page_size, initial=50)
+        self.count_tap = create_atom_value_tap(self.grips.COUNT, initial=1)
+        self.tab_tap = create_atom_value_tap(self.grips.CURRENT_TAB, initial="clock")
+        self.page_size_tap = create_atom_value_tap(self.grips.PAGE_SIZE, initial=50)
         self.description_tap = create_atom_value_tap(
-            self.grips.description,
+            self.grips.DESCRIPTION,
             initial="PySide6 demo using grip-py with manual refresh",
         )
         self.weather_provider_tap = create_atom_value_tap(
-            self.grips.weather_provider_name,
+            self.grips.WEATHER_PROVIDER_NAME,
             initial="meteo",
         )
         self.calculator_tap = CalculatorTap(self.grips)
+        self.location_to_geo_tap = LocationToGeoTap(self.weather_grips)
 
         home = self.grok.main_home_context
         home.register_tap(self.clock_tap)
@@ -70,15 +72,16 @@ class DemoRuntime:
         home.register_tap(self.description_tap)
         home.register_tap(self.weather_provider_tap)
         home.register_tap(self.calculator_tap)
+        home.register_tap(self.location_to_geo_tap)
 
-        self.meteo_weather_tap = FormulaWeatherTap(self.weather_grips, provider="meteo")
+        self.meteo_weather_tap = OpenMeteoWeatherTap(self.weather_grips)
         self.mock_weather_tap = FormulaWeatherTap(self.weather_grips, provider="mock")
 
         self._matcher = TapMatcher(self.grok.main_home_context, self.main_context)
         self._matcher.add_binding(
             QueryBinding(
                 id="meteo-weather",
-                query=Query({self.grips.weather_provider_name: "meteo"}),
+                query=with_one_of(self.grips.WEATHER_PROVIDER_NAME, "meteo").build(),
                 tap=self.meteo_weather_tap,
                 base_score=5,
             )
@@ -86,7 +89,7 @@ class DemoRuntime:
         self._matcher.add_binding(
             QueryBinding(
                 id="mock-weather",
-                query=Query({self.grips.weather_provider_name: "mock"}),
+                query=with_one_of(self.grips.WEATHER_PROVIDER_NAME, "mock").build(),
                 tap=self.mock_weather_tap,
                 base_score=5,
             )
@@ -94,7 +97,7 @@ class DemoRuntime:
 
         self.header_context = self.main_context.create_child()
         self.header_location_tap = create_atom_value_tap(
-            self.weather_grips.weather_location,
+            self.weather_grips.WEATHER_LOCATION,
             initial="Sydney",
         )
         self.header_context.register_tap(self.header_location_tap)
@@ -104,27 +107,37 @@ class DemoRuntime:
             "B": self.main_context.create_child(),
         }
         self.location_taps = {
-            "A": create_atom_value_tap(self.weather_grips.weather_location, initial="Sydney"),
-            "B": create_atom_value_tap(self.weather_grips.weather_location, initial="Melbourne"),
+            "A": create_atom_value_tap(self.weather_grips.WEATHER_LOCATION, initial="Sydney"),
+            "B": create_atom_value_tap(self.weather_grips.WEATHER_LOCATION, initial="Melbourne"),
         }
         self.column_contexts["A"].register_tap(self.location_taps["A"])
         self.column_contexts["B"].register_tap(self.location_taps["B"])
 
     def _read(self, grip: Any, *, ctx: GripContext | None = None) -> Any:
-        return use_grip(self.grok, grip, ctx or self.main_context)
+        return self.get_or_create_drip(grip, ctx=ctx).get()
+
+    def get_or_create_drip(self, grip: Any, *, ctx: GripContext | None = None) -> Drip[Any]:
+        context = ctx or self.main_context
+        key = (context.id, grip.key)
+        existing = self._drips.get(key)
+        if existing is not None:
+            return existing
+        created = self.grok.query(grip, context)
+        self._drips[key] = created
+        return created
 
     def get_time(self) -> datetime:
-        value = self._read(self.grips.current_time)
+        value = self._read(self.grips.CURRENT_TIME)
         return value if isinstance(value, datetime) else datetime.now().replace(microsecond=0)
 
     def get_page_size(self) -> int:
-        return int(self._read(self.grips.page_size) or 0)
+        return int(self._read(self.grips.PAGE_SIZE) or 0)
 
     def get_description(self) -> str:
-        return str(self._read(self.grips.description) or "")
+        return str(self._read(self.grips.DESCRIPTION) or "")
 
     def get_count(self) -> int:
-        return int(self._read(self.grips.count) or 0)
+        return int(self._read(self.grips.COUNT) or 0)
 
     def increment_count(self) -> None:
         self.count_tap.update(lambda count: int(count or 0) + 1)
@@ -136,7 +149,7 @@ class DemoRuntime:
         return self.get_count() % 2 == 0
 
     def get_tab(self) -> TabName:
-        tab = str(self._read(self.grips.current_tab) or "clock")
+        tab = str(self._read(self.grips.CURRENT_TAB) or "clock")
         return tab if tab in {"clock", "calc", "weather"} else "clock"
 
     def set_tab(self, tab: TabName) -> None:
@@ -145,7 +158,7 @@ class DemoRuntime:
         self.tab_tap.set(tab)
 
     def get_calc_display(self) -> str:
-        return str(self._read(self.grips.calc_display) or "0")
+        return str(self._read(self.grips.CALC_DISPLAY) or "0")
 
     def _invoke_calc(self, grip: Any, *args: Any) -> None:
         fn = self._read(grip)
@@ -153,14 +166,14 @@ class DemoRuntime:
             fn(*args)
 
     def press_digit(self, digit: int) -> None:
-        self._invoke_calc(self.grips.calc_digit_pressed, digit)
+        self._invoke_calc(self.grips.CALC_DIGIT_PRESSED, digit)
 
     def press_operator(self, op: str) -> None:
         mapping = {
-            "+": self.grips.calc_add_pressed,
-            "-": self.grips.calc_sub_pressed,
-            "*": self.grips.calc_mul_pressed,
-            "/": self.grips.calc_div_pressed,
+            "+": self.grips.CALC_ADD_PRESSED,
+            "-": self.grips.CALC_SUB_PRESSED,
+            "*": self.grips.CALC_MUL_PRESSED,
+            "/": self.grips.CALC_DIV_PRESSED,
         }
         grip = mapping.get(op)
         if grip is None:
@@ -168,13 +181,13 @@ class DemoRuntime:
         self._invoke_calc(grip)
 
     def press_equals(self) -> None:
-        self._invoke_calc(self.grips.calc_equals_pressed)
+        self._invoke_calc(self.grips.CALC_EQUALS_PRESSED)
 
     def press_clear(self) -> None:
-        self._invoke_calc(self.grips.calc_clear_pressed)
+        self._invoke_calc(self.grips.CALC_CLEAR_PRESSED)
 
     def get_weather_provider(self) -> ProviderName:
-        provider = str(self._read(self.grips.weather_provider_name) or "meteo")
+        provider = str(self._read(self.grips.WEATHER_PROVIDER_NAME) or "meteo")
         return provider if provider in {"meteo", "mock"} else "meteo"
 
     def set_weather_provider(self, provider: ProviderName) -> None:
@@ -190,7 +203,7 @@ class DemoRuntime:
 
     def get_weather_location(self, column: str) -> str:
         context = self._column_context(column)
-        return str(self._read(self.weather_grips.weather_location, ctx=context) or "")
+        return str(self._read(self.weather_grips.WEATHER_LOCATION, ctx=context) or "")
 
     def set_weather_location(self, column: str, location: str) -> None:
         key = column.upper()
@@ -199,7 +212,7 @@ class DemoRuntime:
         self.location_taps[key].set(location)
 
     def get_header_temp(self) -> float | None:
-        temp = self._read(self.weather_grips.weather_temp_c, ctx=self.header_context)
+        temp = self._read(self.weather_grips.WEATHER_TEMP_C, ctx=self.header_context)
         return float(temp) if temp is not None else None
 
     def get_weather_snapshot(self, column: str) -> WeatherSnapshot:
@@ -207,22 +220,21 @@ class DemoRuntime:
         provider = self.get_weather_provider()
         return WeatherSnapshot(
             provider=provider,
-            location_label=str(self._read(self.weather_grips.geo_label, ctx=context) or ""),
-            temp_c=_to_float(self._read(self.weather_grips.weather_temp_c, ctx=context)),
-            humidity_pct=_to_int(self._read(self.weather_grips.weather_humidity, ctx=context)),
-            wind_speed_kph=_to_int(self._read(self.weather_grips.weather_wind_speed, ctx=context)),
-            wind_dir=str(self._read(self.weather_grips.weather_wind_dir, ctx=context) or ""),
-            rain_pct=_to_int(self._read(self.weather_grips.weather_rain_pct, ctx=context)),
-            sunny_pct=_to_int(self._read(self.weather_grips.weather_sunny_pct, ctx=context)),
-            uv_index=_to_float(self._read(self.weather_grips.weather_uv_index, ctx=context)),
+            location_label=str(self._read(self.weather_grips.GEO_LABEL, ctx=context) or ""),
+            temp_c=_to_float(self._read(self.weather_grips.WEATHER_TEMP_C, ctx=context)),
+            humidity_pct=_to_int(self._read(self.weather_grips.WEATHER_HUMIDITY, ctx=context)),
+            wind_speed_kph=_to_int(self._read(self.weather_grips.WEATHER_WIND_SPEED, ctx=context)),
+            wind_dir=str(self._read(self.weather_grips.WEATHER_WIND_DIR, ctx=context) or ""),
+            rain_pct=_to_int(self._read(self.weather_grips.WEATHER_RAIN_PCT, ctx=context)),
+            sunny_pct=_to_int(self._read(self.weather_grips.WEATHER_SUNNY_PCT, ctx=context)),
+            uv_index=_to_float(self._read(self.weather_grips.WEATHER_UV_INDEX, ctx=context)),
         )
 
     def tick_clock(self, seconds: int = 1) -> None:
         self.clock_tap.tick(seconds)
 
     def tick_weather(self, step: int = 1) -> None:
-        # Tick both taps; only the active one has destinations attached.
-        self.meteo_weather_tap.tick(step)
+        # Mock weather changes over time; live meteo updates on param changes + cache.
         self.mock_weather_tap.tick(step)
 
     def tick(self) -> None:

@@ -15,8 +15,8 @@ from .grips import DemoGrips, ProviderName, WeatherGrips
 class ClockTap(BaseTap):
     """Simple clock tap advanced by the host application timer."""
 
-    def __init__(self, grips: DemoGrips, *, initial_time: datetime | None = None):
-        super().__init__(provides=(grips.current_time,))
+    def __init__(self, grips: type[DemoGrips], *, initial_time: datetime | None = None):
+        super().__init__(provides=(grips.CURRENT_TIME,))
         self._grips = grips
         self._current = (initial_time or datetime.now()).replace(microsecond=0)
 
@@ -29,7 +29,7 @@ class ClockTap(BaseTap):
         self.produce()
 
     def produce(self, *, dest_context: GripContext | None = None) -> None:
-        self.publish({self._grips.current_time: self._current}, dest_context=dest_context)
+        self.publish({self._grips.CURRENT_TIME: self._current}, dest_context=dest_context)
 
 
 class CalculatorTap(MultiAtomValueTap):
@@ -46,27 +46,27 @@ class CalculatorTap(MultiAtomValueTap):
         ast.USub: lambda a: -a,
     }
 
-    def __init__(self, grips: DemoGrips):
+    def __init__(self, grips: type[DemoGrips]):
         self._grips = grips
         super().__init__(
             {
-                grips.calc_display: grips.calc_display.default or "0",
-                grips.calc_digit_pressed: self.press_digit,
-                grips.calc_add_pressed: lambda: self.press_operator("+"),
-                grips.calc_sub_pressed: lambda: self.press_operator("-"),
-                grips.calc_mul_pressed: lambda: self.press_operator("*"),
-                grips.calc_div_pressed: lambda: self.press_operator("/"),
-                grips.calc_equals_pressed: self.press_equals,
-                grips.calc_clear_pressed: self.press_clear,
+                grips.CALC_DISPLAY: grips.CALC_DISPLAY.default or "0",
+                grips.CALC_DIGIT_PRESSED: self.press_digit,
+                grips.CALC_ADD_PRESSED: lambda: self.press_operator("+"),
+                grips.CALC_SUB_PRESSED: lambda: self.press_operator("-"),
+                grips.CALC_MUL_PRESSED: lambda: self.press_operator("*"),
+                grips.CALC_DIV_PRESSED: lambda: self.press_operator("/"),
+                grips.CALC_EQUALS_PRESSED: self.press_equals,
+                grips.CALC_CLEAR_PRESSED: self.press_clear,
             }
         )
 
     def _display(self) -> str:
-        value = self.get(self._grips.calc_display)
+        value = self.get(self._grips.CALC_DISPLAY)
         return str(value if value is not None else "0")
 
     def _set_display(self, value: str) -> None:
-        self.set(self._grips.calc_display, value)
+        self.set(self._grips.CALC_DISPLAY, value)
 
     def press_digit(self, digit: int) -> None:
         if digit < 0 or digit > 9:
@@ -145,22 +145,31 @@ class WeatherMetrics:
 class FormulaWeatherTap(BaseTap):
     """Deterministic weather tap keyed by location and provider name."""
 
-    def __init__(self, weather_grips: WeatherGrips, *, provider: ProviderName):
+    def __init__(
+        self,
+        weather_grips: type[WeatherGrips],
+        *,
+        provider: ProviderName,
+        include_geo_label: bool = False,
+    ):
+        provides = [
+            weather_grips.WEATHER_TEMP_C,
+            weather_grips.WEATHER_HUMIDITY,
+            weather_grips.WEATHER_WIND_SPEED,
+            weather_grips.WEATHER_WIND_DIR,
+            weather_grips.WEATHER_RAIN_PCT,
+            weather_grips.WEATHER_SUNNY_PCT,
+            weather_grips.WEATHER_UV_INDEX,
+        ]
+        if include_geo_label:
+            provides.append(weather_grips.GEO_LABEL)
         super().__init__(
-            provides=(
-                weather_grips.weather_temp_c,
-                weather_grips.weather_humidity,
-                weather_grips.weather_wind_speed,
-                weather_grips.weather_wind_dir,
-                weather_grips.weather_rain_pct,
-                weather_grips.weather_sunny_pct,
-                weather_grips.weather_uv_index,
-                weather_grips.geo_label,
-            ),
-            destination_param_grips=(weather_grips.weather_location,),
+            provides=tuple(provides),
+            destination_param_grips=(weather_grips.WEATHER_LOCATION,),
         )
         self._grips = weather_grips
         self._provider = provider
+        self._include_geo_label = include_geo_label
         self._tick = 0
 
     @property
@@ -186,18 +195,22 @@ class FormulaWeatherTap(BaseTap):
             self.publish(self._updates_for_context(context), dest_context=context)
 
     def _updates_for_context(self, context: GripContext) -> dict[Any, Any]:
-        location = self.get_destination_param_value(context, self._grips.weather_location)
+        location = self.get_destination_param_value(context, self._grips.WEATHER_LOCATION)
         location_text = str(location or "Unknown")
         metrics = compute_weather_metrics(location_text, provider=self._provider, tick=self._tick)
         return {
-            self._grips.weather_temp_c: metrics.temp_c,
-            self._grips.weather_humidity: metrics.humidity_pct,
-            self._grips.weather_wind_speed: metrics.wind_speed_kph,
-            self._grips.weather_wind_dir: metrics.wind_dir,
-            self._grips.weather_rain_pct: metrics.rain_pct,
-            self._grips.weather_sunny_pct: metrics.sunny_pct,
-            self._grips.weather_uv_index: metrics.uv_index,
-            self._grips.geo_label: location_text,
+            self._grips.WEATHER_TEMP_C: metrics.temp_c,
+            self._grips.WEATHER_HUMIDITY: metrics.humidity_pct,
+            self._grips.WEATHER_WIND_SPEED: metrics.wind_speed_kph,
+            self._grips.WEATHER_WIND_DIR: metrics.wind_dir,
+            self._grips.WEATHER_RAIN_PCT: metrics.rain_pct,
+            self._grips.WEATHER_SUNNY_PCT: metrics.sunny_pct,
+            self._grips.WEATHER_UV_INDEX: metrics.uv_index,
+            **(
+                {self._grips.GEO_LABEL: location_text}
+                if self._include_geo_label
+                else {}
+            ),
         }
 
 

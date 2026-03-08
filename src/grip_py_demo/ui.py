@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QComboBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -95,7 +97,8 @@ class MainWindow(QWidget):
         super().__init__()
         self._runtime = runtime
         self._bridge = RuntimeBridge(runtime)
-        self._bridge.state_changed.connect(self.render)
+        self._bridge.grip_changed.connect(self._on_grip_changed)
+        self._handlers: dict[tuple[str, str], list[Callable[[], None]]] = {}
 
         self.setWindowTitle("Grip Py Demo")
 
@@ -123,6 +126,9 @@ class MainWindow(QWidget):
         tabs.addWidget(self.calc_tab_button)
         tabs.addWidget(self.weather_tab_button)
         tabs.addStretch(1)
+        self.exit_button = QPushButton("Exit")
+        self.exit_button.clicked.connect(self.close)
+        tabs.addWidget(self.exit_button)
         root.addLayout(tabs)
 
         self.stack = QStackedWidget()
@@ -133,6 +139,8 @@ class MainWindow(QWidget):
         self.stack.addWidget(self.calc_page)
         self.stack.addWidget(self.weather_page)
         root.addWidget(self.stack)
+
+        self._configure_handlers()
 
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -243,7 +251,46 @@ class MainWindow(QWidget):
         layout.addStretch(1)
         return page
 
-    def render(self) -> None:
+    def _bind(self, ctx, grip, handler: Callable[[], None]) -> None:
+        key = (ctx.id, grip.key)
+        self._handlers.setdefault(key, []).append(handler)
+
+    def _configure_handlers(self) -> None:
+        main = self._runtime.main_context
+        grips = self._runtime.grips
+        weather = self._runtime.weather_grips
+
+        self._bind(main, grips.CURRENT_TAB, self._update_tab_controls)
+        self._bind(main, grips.COUNT, self._update_count)
+        self._bind(main, grips.CURRENT_TIME, self._update_clock_time)
+        self._bind(main, grips.PAGE_SIZE, self._update_page_size)
+        self._bind(main, grips.DESCRIPTION, self._update_description)
+        self._bind(main, grips.CALC_DISPLAY, self._update_calc_display)
+        self._bind(main, grips.WEATHER_PROVIDER_NAME, self._update_provider)
+
+        self._bind(self._runtime.header_context, weather.WEATHER_TEMP_C, self._update_header_temp)
+
+        for column_name, column_ctx in self._runtime.column_contexts.items():
+            updater = lambda current_column=column_name: self._update_weather_column(current_column)
+            for grip in (
+                weather.WEATHER_LOCATION,
+                weather.GEO_LABEL,
+                weather.WEATHER_TEMP_C,
+                weather.WEATHER_HUMIDITY,
+                weather.WEATHER_WIND_SPEED,
+                weather.WEATHER_WIND_DIR,
+                weather.WEATHER_RAIN_PCT,
+                weather.WEATHER_SUNNY_PCT,
+                weather.WEATHER_UV_INDEX,
+            ):
+                self._bind(column_ctx, grip, updater)
+
+    def _on_grip_changed(self, ctx_id: str, grip_key: str) -> None:
+        handlers = self._handlers.get((ctx_id, grip_key), ())
+        for handler in handlers:
+            handler()
+
+    def _update_tab_controls(self) -> None:
         tab = self._runtime.get_tab()
         tab_index = {"clock": 0, "calc": 1, "weather": 2}[tab]
         self.stack.setCurrentIndex(tab_index)
@@ -251,10 +298,16 @@ class MainWindow(QWidget):
         self.calc_tab_button.setDisabled(tab == "calc")
         self.weather_tab_button.setDisabled(tab == "weather")
 
+    def _update_header_temp(self) -> None:
         header_temp = self._runtime.get_header_temp()
         header_text = "--" if header_temp is None else f"{header_temp:.1f}"
         self.header_temp_label.setText(f"- Sydney temp {header_text}°C")
 
+    def _update_count(self) -> None:
+        self.count_label.setText(f"Count: {self._runtime.get_count()}")
+        self._update_clock_time()
+
+    def _update_clock_time(self) -> None:
         if self._runtime.is_clock_visible():
             self.clock_time_label.setText(
                 f"Time: {self._runtime.get_time().strftime('%H:%M:%S')}"
@@ -265,23 +318,41 @@ class MainWindow(QWidget):
             self.clock_time_label.hide()
             self.clock_blocked_label.show()
 
+    def _update_page_size(self) -> None:
         self.page_size_label.setText(f"Page size: {self._runtime.get_page_size()}")
-        self.count_label.setText(f"Count: {self._runtime.get_count()}")
+
+    def _update_description(self) -> None:
         self.description_label.setText(f"Description: {self._runtime.get_description()}")
 
+    def _update_calc_display(self) -> None:
         self.calc_display_label.setText(self._runtime.get_calc_display())
 
+    def _update_provider(self) -> None:
         provider = self._runtime.get_weather_provider()
         self.provider_label.setText(f"Current weather provider: {provider}")
         self.provider_meteo_button.setDisabled(provider == "meteo")
         self.provider_mock_button.setDisabled(provider == "mock")
 
-        snapshot_a = self._runtime.get_weather_snapshot("A")
-        snapshot_b = self._runtime.get_weather_snapshot("B")
-        self.column_a.set_location(self._runtime.get_weather_location("A"))
-        self.column_b.set_location(self._runtime.get_weather_location("B"))
-        self.column_a.set_snapshot(snapshot_a)
-        self.column_b.set_snapshot(snapshot_b)
+    def _update_weather_column(self, column: str) -> None:
+        snapshot = self._runtime.get_weather_snapshot(column)
+        location = self._runtime.get_weather_location(column)
+        if column == "A":
+            self.column_a.set_location(location)
+            self.column_a.set_snapshot(snapshot)
+            return
+        self.column_b.set_location(location)
+        self.column_b.set_snapshot(snapshot)
+
+    def render(self) -> None:
+        self._update_tab_controls()
+        self._update_header_temp()
+        self._update_count()
+        self._update_page_size()
+        self._update_description()
+        self._update_calc_display()
+        self._update_provider()
+        self._update_weather_column("A")
+        self._update_weather_column("B")
 
     def closeEvent(self, event):  # type: ignore[override]
         self._timer.stop()

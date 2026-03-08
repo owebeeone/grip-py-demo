@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -12,71 +11,96 @@ from grip_py import Grip, GripRegistry
 TabName = Literal["clock", "calc", "weather"]
 ProviderName = Literal["meteo", "mock"]
 
+REGISTRY = GripRegistry()
 
-@dataclass(frozen=True, slots=True)
+
 class DemoGrips:
-    current_time: Grip[datetime]
-    page_size: Grip[int]
-    description: Grip[str]
-    count: Grip[int]
-    calc_display: Grip[str]
-    current_tab: Grip[TabName]
-    weather_provider_name: Grip[ProviderName]
-    calc_digit_pressed: Grip[Callable[[int], None] | None]
-    calc_add_pressed: Grip[Callable[[], None] | None]
-    calc_sub_pressed: Grip[Callable[[], None] | None]
-    calc_mul_pressed: Grip[Callable[[], None] | None]
-    calc_div_pressed: Grip[Callable[[], None] | None]
-    calc_equals_pressed: Grip[Callable[[], None] | None]
-    calc_clear_pressed: Grip[Callable[[], None] | None]
+    """Core demo grips defined once as class-level constants."""
+
+    CURRENT_TIME: Grip[datetime] = REGISTRY.add(
+        "CurrentTime",
+        datetime.now().replace(microsecond=0),
+    )
+    PAGE_SIZE: Grip[int] = REGISTRY.add("PageSize", 50)
+    DESCRIPTION: Grip[str] = REGISTRY.add(
+        "Description",
+        "PySide6 demo using grip-py with manual refresh",
+    )
+    COUNT: Grip[int] = REGISTRY.add("Count", 1)
+    CALC_DISPLAY: Grip[str] = REGISTRY.add("CalcDisplay", "0")
+    CURRENT_TAB: Grip[TabName] = REGISTRY.add("CurrentTab", "clock")
+    WEATHER_PROVIDER_NAME: Grip[ProviderName] = REGISTRY.add(
+        "WeatherProvider",
+        "meteo",
+    )
+    CALC_DIGIT_PRESSED: Grip[Callable[[int], None] | None] = REGISTRY.add(
+        "Calc.DigitPressed",
+        value_type=object,
+    )
+    CALC_ADD_PRESSED: Grip[Callable[[], None] | None] = REGISTRY.add(
+        "Calc.AddPressed",
+        value_type=object,
+    )
+    CALC_SUB_PRESSED: Grip[Callable[[], None] | None] = REGISTRY.add(
+        "Calc.SubPressed",
+        value_type=object,
+    )
+    CALC_MUL_PRESSED: Grip[Callable[[], None] | None] = REGISTRY.add(
+        "Calc.MulPressed",
+        value_type=object,
+    )
+    CALC_DIV_PRESSED: Grip[Callable[[], None] | None] = REGISTRY.add(
+        "Calc.DivPressed",
+        value_type=object,
+    )
+    CALC_EQUALS_PRESSED: Grip[Callable[[], None] | None] = REGISTRY.add(
+        "Calc.EqualsPressed",
+        value_type=object,
+    )
+    CALC_CLEAR_PRESSED: Grip[Callable[[], None] | None] = REGISTRY.add(
+        "Calc.ClearPressed",
+        value_type=object,
+    )
 
 
-@dataclass(frozen=True, slots=True)
 class WeatherGrips:
-    weather_temp_c: Grip[float | None]
-    weather_humidity: Grip[int | None]
-    weather_wind_speed: Grip[int | None]
-    weather_wind_dir: Grip[str]
-    weather_rain_pct: Grip[int | None]
-    weather_sunny_pct: Grip[int | None]
-    weather_uv_index: Grip[float | None]
-    weather_location: Grip[str | None]
-    geo_label: Grip[str]
+    """Weather grips defined once as class-level constants."""
 
-
-def define_demo_grips(registry: GripRegistry) -> DemoGrips:
-    """Create non-weather grips in the target registry."""
-    return DemoGrips(
-        current_time=registry.add("CurrentTime", datetime.now().replace(microsecond=0)),
-        page_size=registry.add("PageSize", 50),
-        description=registry.add(
-            "Description",
-            "PySide6 demo using grip-py with manual refresh",
-        ),
-        count=registry.add("Count", 1),
-        calc_display=registry.add("CalcDisplay", "0"),
-        current_tab=registry.add("CurrentTab", "clock"),
-        weather_provider_name=registry.add("WeatherProvider", "meteo"),
-        calc_digit_pressed=registry.add("Calc.DigitPressed", value_type=object),
-        calc_add_pressed=registry.add("Calc.AddPressed", value_type=object),
-        calc_sub_pressed=registry.add("Calc.SubPressed", value_type=object),
-        calc_mul_pressed=registry.add("Calc.MulPressed", value_type=object),
-        calc_div_pressed=registry.add("Calc.DivPressed", value_type=object),
-        calc_equals_pressed=registry.add("Calc.EqualsPressed", value_type=object),
-        calc_clear_pressed=registry.add("Calc.ClearPressed", value_type=object),
+    WEATHER_TEMP_C: Grip[float | None] = REGISTRY.add(
+        "Weather.TempC",
+        value_type=float,
     )
-
-
-def define_weather_grips(registry: GripRegistry) -> WeatherGrips:
-    """Create weather-related grips in the target registry."""
-    return WeatherGrips(
-        weather_temp_c=registry.add("Weather.TempC", value_type=float),
-        weather_humidity=registry.add("Weather.HumidityPct", value_type=int),
-        weather_wind_speed=registry.add("Weather.WindSpeedKph", value_type=int),
-        weather_wind_dir=registry.add("Weather.WindDir", ""),
-        weather_rain_pct=registry.add("Weather.RainPct", value_type=int),
-        weather_sunny_pct=registry.add("Weather.SunnyPct", value_type=int),
-        weather_uv_index=registry.add("Weather.UV", value_type=float),
-        weather_location=registry.add("Weather.Location", value_type=str),
-        geo_label=registry.add("Geo.Label", ""),
+    WEATHER_HUMIDITY: Grip[int | None] = REGISTRY.add(
+        "Weather.HumidityPct",
+        value_type=int,
     )
+    WEATHER_WIND_SPEED: Grip[int | None] = REGISTRY.add(
+        "Weather.WindSpeedKph",
+        value_type=int,
+    )
+    WEATHER_WIND_DIR: Grip[str] = REGISTRY.add("Weather.WindDir", "")
+    WEATHER_RAIN_PCT: Grip[int | None] = REGISTRY.add(
+        "Weather.RainPct",
+        value_type=int,
+    )
+    WEATHER_SUNNY_PCT: Grip[int | None] = REGISTRY.add(
+        "Weather.SunnyPct",
+        value_type=int,
+    )
+    WEATHER_UV_INDEX: Grip[float | None] = REGISTRY.add(
+        "Weather.UV",
+        value_type=float,
+    )
+    WEATHER_LOCATION: Grip[str | None] = REGISTRY.add(
+        "Weather.Location",
+        value_type=str,
+    )
+    GEO_LAT: Grip[float | None] = REGISTRY.add(
+        "Geo.Lat",
+        value_type=float,
+    )
+    GEO_LNG: Grip[float | None] = REGISTRY.add(
+        "Geo.Lng",
+        value_type=float,
+    )
+    GEO_LABEL: Grip[str] = REGISTRY.add("Geo.Label", "")
