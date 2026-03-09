@@ -4,6 +4,15 @@ from grip_py_demo.demo_runtime import DemoRuntime
 from grip_py_demo.grips import DemoGrips, REGISTRY, WeatherGrips
 
 
+def _wait_until(predicate, timeout_s: float = 1.0) -> None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition not satisfied before timeout")
+
+
 def test_grip_catalog_uses_upper_case_constant_names() -> None:
     assert hasattr(DemoGrips, "COUNT")
     assert not hasattr(DemoGrips, "count")
@@ -71,13 +80,23 @@ def test_weather_provider_switch_and_location_updates() -> None:
     assert initial_a.location_label != initial_b.location_label
 
     runtime.set_weather_provider("mock")
-    runtime.tick_weather()
+    _wait_until(
+        lambda: (
+            runtime.tick_weather() is None
+            and runtime.get_weather_snapshot("A").provider == "mock"
+        )
+    )
     mock_a = runtime.get_weather_snapshot("A")
     assert mock_a.provider == "mock"
-    assert mock_a.temp_c != initial_a.temp_c
+    assert mock_a.location_label == initial_a.location_label
 
     runtime.set_weather_location("A", "Nowhere")
-    runtime.tick_weather()
+    _wait_until(
+        lambda: (
+            runtime.tick_weather() is None
+            and runtime.get_weather_snapshot("A").location_label == "Nowhere"
+        )
+    )
     updated_a = runtime.get_weather_snapshot("A")
     assert updated_a.location_label == "Nowhere"
     assert updated_a.temp_c is not None

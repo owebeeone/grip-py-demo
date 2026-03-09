@@ -28,12 +28,16 @@ class RuntimeBridge(QObject):
         key = (ctx_id, grip_key)
         drip = self._runtime.get_or_create_drip(grip, ctx=ctx)
         self._drips[key] = drip
-        unsubscribe = drip.subscribe_priority(
-            lambda _value, current_ctx_id=ctx_id, current_grip_key=grip_key: self.grip_changed.emit(
-                current_ctx_id,
-                current_grip_key,
-            )
-        )
+
+        async def on_value(
+            _value,
+            *,
+            current_ctx_id: str = ctx_id,
+            current_grip_key: str = grip_key,
+        ) -> None:
+            self.grip_changed.emit(current_ctx_id, current_grip_key)
+
+        unsubscribe = drip.subscribe_async(on_value)
         self._unsubscribers.append(unsubscribe)
 
     def read(self, grip, *, ctx=None):
