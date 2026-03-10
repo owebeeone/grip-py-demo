@@ -7,7 +7,10 @@ from typing import Any, cast
 
 from glial_net import HttpGlialClient
 from glial_local.types import ContextState, DripState, SessionSnapshot, TapExport
-from grip_py.core.local_persistence import apply_local_persistence_snapshot
+from grip_py.core.local_persistence import (
+    apply_local_persistence_snapshot,
+    build_shared_projection_snapshot,
+)
 
 if False:  # pragma: no cover
     from .demo_runtime import DemoRuntime
@@ -92,11 +95,14 @@ class DemoGlialSessionSync:
         self._session_kind = session_kind
         self._last_remote_modified_ms = 0
         self._last_applied_signature = ""
+        self._last_shared_signature = ""
         self._syncing = False
 
     def start(self) -> None:
         local_snapshot = self._read_local_snapshot()
         self._last_applied_signature = _stable_snapshot_signature(local_snapshot)
+        if self._session_kind == "glial-shared":
+            self._last_shared_signature = ""
         try:
             remote = self._client.load_remote_session(self._user_id, self._session_id)
         except Exception as error:
@@ -109,6 +115,8 @@ class DemoGlialSessionSync:
                 title=self._title,
             )
             self._last_remote_modified_ms = int(saved["last_modified_ms"])
+            if self._session_kind == "glial-shared":
+                self._save_shared_snapshot()
             return
 
         self._last_remote_modified_ms = int(remote["last_modified_ms"])
@@ -117,6 +125,8 @@ class DemoGlialSessionSync:
         if remote_signature != self._last_applied_signature:
             self._apply_remote_snapshot(remote_snapshot)
             self._last_applied_signature = remote_signature
+        if self._session_kind == "glial-shared":
+            self._save_shared_snapshot()
 
     def sync_now(self) -> None:
         if self._syncing:
@@ -156,6 +166,8 @@ class DemoGlialSessionSync:
             )
             self._last_remote_modified_ms = int(saved["last_modified_ms"])
             self._last_applied_signature = local_signature
+            if self._session_kind == "glial-shared":
+                self._save_shared_snapshot()
         finally:
             self._syncing = False
 
@@ -172,3 +184,20 @@ class DemoGlialSessionSync:
             lambda: apply_local_persistence_snapshot(self._runtime.grok, snapshot)
         )
         self._store.replace_snapshot(self._session_id, snapshot, "glial_resync")
+
+    def _read_local_shared_snapshot(self) -> dict[str, Any]:
+        snapshot = build_shared_projection_snapshot(self._runtime.grok, self._session_id)
+        return cast(dict[str, Any], asdict(snapshot))
+
+    def _save_shared_snapshot(self) -> None:
+        shared_snapshot = self._read_local_shared_snapshot()
+        shared_signature = str(shared_snapshot)
+        if shared_signature == self._last_shared_signature:
+            return
+        self._client.save_shared_session(
+            self._user_id,
+            self._session_id,
+            shared_snapshot,
+            title=self._title,
+        )
+        self._last_shared_signature = shared_signature
