@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from glial_local import GripSessionStore
 from grip_py import (
     Drip,
     GripContext,
@@ -40,12 +41,22 @@ class DemoRuntime:
 
     location_options = LOCATION_OPTIONS
 
-    def __init__(self, *, initial_time: datetime | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        initial_time: datetime | None = None,
+        session_id: str | None = None,
+        store: GripSessionStore | None = None,
+    ) -> None:
+        if (session_id is None) != (store is None):
+            raise ValueError("session_id and store must either both be provided or both be omitted")
         self.registry = REGISTRY
         self.grips = DemoGrips
         self.weather_grips = WeatherGrips
         self.grok = Grok(self.registry)
         self._drips: dict[tuple[str, str], Drip[Any]] = {}
+        self.session_id = session_id
+        self._session_store = store
 
         self.main_context = self.grok.main_presentation_context
 
@@ -95,7 +106,7 @@ class DemoRuntime:
             )
         )
 
-        self.header_context = self.main_context.create_child()
+        self.header_context = self.main_context.create_child("header-weather")
         self.header_location_tap = create_atom_value_tap(
             self.weather_grips.WEATHER_LOCATION,
             initial="Sydney",
@@ -103,8 +114,8 @@ class DemoRuntime:
         self.header_context.register_tap(self.header_location_tap)
 
         self.column_contexts: dict[str, GripContext] = {
-            "A": self.main_context.create_child(),
-            "B": self.main_context.create_child(),
+            "A": self.main_context.create_child("weather-column-a"),
+            "B": self.main_context.create_child("weather-column-b"),
         }
         self.location_taps = {
             "A": create_atom_value_tap(self.weather_grips.WEATHER_LOCATION, initial="Sydney"),
@@ -112,6 +123,14 @@ class DemoRuntime:
         }
         self.column_contexts["A"].register_tap(self.location_taps["A"])
         self.column_contexts["B"].register_tap(self.location_taps["B"])
+
+        if self._session_store is not None and self.session_id is not None:
+            self.grok.attach_local_persistence(
+                session_id=self.session_id,
+                store=self._session_store,
+                title="Grip Py Demo",
+                flush_delay_ms=250,
+            )
 
     def _read(self, grip: Any, *, ctx: GripContext | None = None) -> Any:
         return self.get_or_create_drip(grip, ctx=ctx).get()
@@ -242,6 +261,13 @@ class DemoRuntime:
     def tick(self) -> None:
         self.tick_clock(1)
         self.tick_weather(1)
+
+    def flush_local_persistence(self) -> None:
+        self.grok.flush_local_persistence()
+
+    def close(self) -> None:
+        self.flush_local_persistence()
+        self.grok.close()
 
 
 def _to_int(value: Any) -> int | None:

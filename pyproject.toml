@@ -9,6 +9,7 @@ description = "PySide6 demo app for grip-py"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "glial-local-py",
   "grip-py",
   "httpx>=0.27",
   "PySide6>=6.6",

@@ -1,6 +1,7 @@
 import time
 
 from grip_py_demo.demo_runtime import DemoRuntime
+from grip_py_demo.demo_session import DemoSessionManager
 from grip_py_demo.grips import DemoGrips, REGISTRY, WeatherGrips
 
 
@@ -208,3 +209,22 @@ def test_meteo_reads_do_not_block_on_slow_network(monkeypatch) -> None:
     elapsed = time.perf_counter() - start
     assert elapsed < 0.1
     assert snapshot.location_label in {"Sydney", ""}
+
+
+def test_runtime_restores_local_session_state(tmp_path) -> None:
+    manager = DemoSessionManager(base_path=tmp_path)
+    session = manager.ensure_current_session()
+
+    runtime = manager.build_runtime(session.glial_session_id)
+    runtime.increment_count()
+    runtime.set_tab("weather")
+    runtime.set_weather_provider("mock")
+    runtime.set_weather_location("A", "Paris")
+    runtime.flush_local_persistence()
+    runtime.close()
+
+    restored = manager.build_runtime(session.glial_session_id)
+    assert restored.get_count() == 2
+    assert restored.get_tab() == "weather"
+    assert restored.get_weather_provider() == "mock"
+    assert restored.get_weather_location("A") == "Paris"

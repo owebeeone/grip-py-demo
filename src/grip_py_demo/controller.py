@@ -29,7 +29,7 @@ class RuntimeBridge(QObject):
         drip = self._runtime.get_or_create_drip(grip, ctx=ctx)
         self._drips[key] = drip
 
-        async def on_value(
+        def on_value(
             _value,
             *,
             current_ctx_id: str = ctx_id,
@@ -37,7 +37,9 @@ class RuntimeBridge(QObject):
         ) -> None:
             self.grip_changed.emit(current_ctx_id, current_grip_key)
 
-        unsubscribe = drip.subscribe_async(on_value)
+        # The desktop UI needs immediate drip-driven updates without relying on
+        # the separate async loop to shuttle callbacks back into Qt.
+        unsubscribe = drip.subscribe_priority(on_value)
         self._unsubscribers.append(unsubscribe)
 
     def read(self, grip, *, ctx=None):

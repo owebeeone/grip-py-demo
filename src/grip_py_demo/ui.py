@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -18,6 +19,9 @@ from PySide6.QtWidgets import (
 
 from .controller import RuntimeBridge
 from .demo_runtime import DemoRuntime, WeatherSnapshot
+from .demo_session import DemoSessionManager
+
+LOGGER = logging.getLogger(__name__)
 
 
 class WeatherColumnWidget(QWidget):
@@ -69,6 +73,9 @@ class WeatherColumnWidget(QWidget):
     def _on_location_changed(self, location: str) -> None:
         self._runtime.set_weather_location(self._column, location)
 
+    def set_runtime(self, runtime: DemoRuntime) -> None:
+        self._runtime = runtime
+
     def set_location(self, location: str) -> None:
         index = self.location_combo.findText(location)
         if index < 0 and location:
@@ -93,9 +100,10 @@ class WeatherColumnWidget(QWidget):
 class MainWindow(QWidget):
     """Top-level application window mirroring grip-react/grip-vue demo UI."""
 
-    def __init__(self, runtime: DemoRuntime):
+    def __init__(self, runtime: DemoRuntime, session_manager: DemoSessionManager | None = None):
         super().__init__()
         self._runtime = runtime
+        self._session_manager = session_manager
         self._bridge = RuntimeBridge(runtime)
         self._bridge.grip_changed.connect(self._on_grip_changed)
         self._handlers: dict[tuple[str, str], list[Callable[[], None]]] = {}
@@ -105,6 +113,22 @@ class MainWindow(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
+
+        session_row = QHBoxLayout()
+        self.current_session_label = QLabel("Current session: -")
+        self.storage_mode_label = QLabel("Storage mode: local")
+        self.session_combo = QComboBox()
+        self.load_session_button = QPushButton("Load Local Session")
+        self.load_session_button.clicked.connect(self._load_selected_session)
+        self.new_session_button = QPushButton("New Local Session")
+        self.new_session_button.clicked.connect(self._create_new_session)
+        session_row.addWidget(self.current_session_label)
+        session_row.addWidget(self.storage_mode_label)
+        session_row.addStretch(1)
+        session_row.addWidget(self.session_combo)
+        session_row.addWidget(self.load_session_button)
+        session_row.addWidget(self.new_session_button)
+        root.addLayout(session_row)
 
         header = QHBoxLayout()
         self.title_label = QLabel("Grip Py Demo")
@@ -117,11 +141,11 @@ class MainWindow(QWidget):
 
         tabs = QHBoxLayout()
         self.clock_tab_button = QPushButton("Clock & Counter")
-        self.clock_tab_button.clicked.connect(lambda: self._runtime.set_tab("clock"))
+        self.clock_tab_button.clicked.connect(lambda: self._set_tab("clock"))
         self.calc_tab_button = QPushButton("Calculator")
-        self.calc_tab_button.clicked.connect(lambda: self._runtime.set_tab("calc"))
+        self.calc_tab_button.clicked.connect(lambda: self._set_tab("calc"))
         self.weather_tab_button = QPushButton("Weather")
-        self.weather_tab_button.clicked.connect(lambda: self._runtime.set_tab("weather"))
+        self.weather_tab_button.clicked.connect(lambda: self._set_tab("weather"))
         tabs.addWidget(self.clock_tab_button)
         tabs.addWidget(self.calc_tab_button)
         tabs.addWidget(self.weather_tab_button)
@@ -144,9 +168,10 @@ class MainWindow(QWidget):
 
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
-        self._timer.timeout.connect(self._runtime.tick)
+        self._timer.timeout.connect(self._tick_runtime)
         self._timer.start()
 
+        self._refresh_session_controls()
         self.render()
 
     def _build_clock_page(self) -> QWidget:
@@ -163,13 +188,13 @@ class MainWindow(QWidget):
         self.description_label = QLabel("Description: -")
 
         counter_row = QHBoxLayout()
-        dec_button = QPushButton("-")
-        dec_button.clicked.connect(self._runtime.decrement_count)
-        inc_button = QPushButton("+")
-        inc_button.clicked.connect(self._runtime.increment_count)
-        counter_row.addWidget(dec_button)
+        self.decrement_button = QPushButton("-")
+        self.decrement_button.clicked.connect(self._decrement_count)
+        self.increment_button = QPushButton("+")
+        self.increment_button.clicked.connect(self._increment_count)
+        counter_row.addWidget(self.decrement_button)
         counter_row.addWidget(self.count_label)
-        counter_row.addWidget(inc_button)
+        counter_row.addWidget(self.increment_button)
         counter_row.addStretch(1)
 
         layout.addWidget(self.clock_time_label)
@@ -194,22 +219,22 @@ class MainWindow(QWidget):
 
         grid = QGridLayout()
         buttons = [
-            ("7", lambda: self._runtime.press_digit(7)),
-            ("8", lambda: self._runtime.press_digit(8)),
-            ("9", lambda: self._runtime.press_digit(9)),
-            ("/", lambda: self._runtime.press_operator("/")),
-            ("4", lambda: self._runtime.press_digit(4)),
-            ("5", lambda: self._runtime.press_digit(5)),
-            ("6", lambda: self._runtime.press_digit(6)),
-            ("*", lambda: self._runtime.press_operator("*")),
-            ("1", lambda: self._runtime.press_digit(1)),
-            ("2", lambda: self._runtime.press_digit(2)),
-            ("3", lambda: self._runtime.press_digit(3)),
-            ("-", lambda: self._runtime.press_operator("-")),
-            ("0", lambda: self._runtime.press_digit(0)),
-            ("C", self._runtime.press_clear),
-            ("=", self._runtime.press_equals),
-            ("+", lambda: self._runtime.press_operator("+")),
+            ("7", lambda: self._press_digit(7)),
+            ("8", lambda: self._press_digit(8)),
+            ("9", lambda: self._press_digit(9)),
+            ("/", lambda: self._press_operator("/")),
+            ("4", lambda: self._press_digit(4)),
+            ("5", lambda: self._press_digit(5)),
+            ("6", lambda: self._press_digit(6)),
+            ("*", lambda: self._press_operator("*")),
+            ("1", lambda: self._press_digit(1)),
+            ("2", lambda: self._press_digit(2)),
+            ("3", lambda: self._press_digit(3)),
+            ("-", lambda: self._press_operator("-")),
+            ("0", lambda: self._press_digit(0)),
+            ("C", self._press_clear),
+            ("=", self._press_equals),
+            ("+", lambda: self._press_operator("+")),
         ]
         for idx, (label, callback) in enumerate(buttons):
             button = QPushButton(label)
@@ -229,13 +254,9 @@ class MainWindow(QWidget):
         provider_row = QHBoxLayout()
         self.provider_label = QLabel("Current weather provider: meteo")
         self.provider_meteo_button = QPushButton("Meteo")
-        self.provider_meteo_button.clicked.connect(
-            lambda: self._runtime.set_weather_provider("meteo")
-        )
+        self.provider_meteo_button.clicked.connect(lambda: self._set_weather_provider("meteo"))
         self.provider_mock_button = QPushButton("Mock")
-        self.provider_mock_button.clicked.connect(
-            lambda: self._runtime.set_weather_provider("mock")
-        )
+        self.provider_mock_button.clicked.connect(lambda: self._set_weather_provider("mock"))
         provider_row.addWidget(self.provider_label)
         provider_row.addStretch(1)
         provider_row.addWidget(self.provider_meteo_button)
@@ -256,6 +277,7 @@ class MainWindow(QWidget):
         self._handlers.setdefault(key, []).append(handler)
 
     def _configure_handlers(self) -> None:
+        self._handlers.clear()
         main = self._runtime.main_context
         grips = self._runtime.grips
         weather = self._runtime.weather_grips
@@ -304,7 +326,14 @@ class MainWindow(QWidget):
         self.header_temp_label.setText(f"- Sydney temp {header_text}°C")
 
     def _update_count(self) -> None:
-        self.count_label.setText(f"Count: {self._runtime.get_count()}")
+        count_value = int(self._bridge.read(self._runtime.grips.COUNT) or 0)
+        self.count_label.setText(f"Count: {count_value}")
+        LOGGER.info(
+            "count_ui_updated session_id=%s drip_value=%r widget_text=%s",
+            self._runtime.session_id,
+            count_value,
+            self.count_label.text(),
+        )
         self._update_clock_time()
 
     def _update_clock_time(self) -> None:
@@ -344,6 +373,7 @@ class MainWindow(QWidget):
         self.column_b.set_snapshot(snapshot)
 
     def render(self) -> None:
+        self._refresh_session_controls()
         self._update_tab_controls()
         self._update_header_temp()
         self._update_count()
@@ -354,9 +384,106 @@ class MainWindow(QWidget):
         self._update_weather_column("A")
         self._update_weather_column("B")
 
+    def _tick_runtime(self) -> None:
+        self._runtime.tick()
+
+    def _set_tab(self, tab: str) -> None:
+        self._runtime.set_tab(tab)
+
+    def _increment_count(self) -> None:
+        self._runtime.increment_count()
+
+    def _decrement_count(self) -> None:
+        self._runtime.decrement_count()
+
+    def _set_weather_provider(self, provider: str) -> None:
+        self._runtime.set_weather_provider(provider)
+
+    def _press_digit(self, digit: int) -> None:
+        self._runtime.press_digit(digit)
+
+    def _press_operator(self, operator: str) -> None:
+        self._runtime.press_operator(operator)
+
+    def _press_clear(self) -> None:
+        self._runtime.press_clear()
+
+    def _press_equals(self) -> None:
+        self._runtime.press_equals()
+
+    def _refresh_session_controls(self) -> None:
+        current_session_id = self._runtime.session_id or "-"
+        self.current_session_label.setText(f"Current session: {current_session_id}")
+        self.storage_mode_label.setText("Storage mode: local")
+        if self._session_manager is None:
+            self.session_combo.setEnabled(False)
+            self.load_session_button.setEnabled(False)
+            self.new_session_button.setEnabled(False)
+            return
+        sessions = self._session_manager.list_local_sessions()
+        self.session_combo.blockSignals(True)
+        self.session_combo.clear()
+        current_index = -1
+        for index, session in enumerate(sessions):
+            label = (
+                f"{session.title} ({session.session_id})"
+                if session.title
+                else session.session_id
+            )
+            self.session_combo.addItem(label, session.session_id)
+            if session.session_id == self._runtime.session_id:
+                current_index = index
+        if current_index >= 0:
+            self.session_combo.setCurrentIndex(current_index)
+        self.session_combo.blockSignals(False)
+        has_selection = self.session_combo.count() > 0
+        self.session_combo.setEnabled(has_selection)
+        self.load_session_button.setEnabled(has_selection)
+        self.new_session_button.setEnabled(True)
+
+    def _swap_runtime(self, runtime: DemoRuntime) -> None:
+        previous_runtime = self._runtime
+        self._bridge.dispose()
+        previous_runtime.close()
+        self._runtime = runtime
+        self.column_a.set_runtime(runtime)
+        self.column_b.set_runtime(runtime)
+        self._bridge = RuntimeBridge(runtime)
+        self._bridge.grip_changed.connect(self._on_grip_changed)
+        self._configure_handlers()
+        self.render()
+        LOGGER.info("session_loaded session_id=%s", self._runtime.session_id)
+        LOGGER.info(
+            "session_loaded_count session_id=%s drip_value=%r widget_text=%s",
+            self._runtime.session_id,
+            int(self._bridge.read(self._runtime.grips.COUNT) or 0),
+            self.count_label.text(),
+        )
+
+    def _load_selected_session(self) -> None:
+        if self._session_manager is None:
+            return
+        session_id = self.session_combo.currentData()
+        if not isinstance(session_id, str) or not session_id:
+            return
+        LOGGER.info(
+            "load_local_session requested_session_id=%s current_session_id=%s",
+            session_id,
+            self._runtime.session_id,
+        )
+        self._session_manager.select_local_session(session_id)
+        self._swap_runtime(self._session_manager.build_runtime(session_id))
+
+    def _create_new_session(self) -> None:
+        if self._session_manager is None:
+            return
+        session = self._session_manager.create_and_select_new_local_session()
+        self._swap_runtime(self._session_manager.build_runtime(session.glial_session_id))
+
     def closeEvent(self, event):  # type: ignore[override]
         self._timer.stop()
         self._bridge.dispose()
+        self._runtime.close()
         super().closeEvent(event)
 
 

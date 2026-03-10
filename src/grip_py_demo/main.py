@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import sys
 from pathlib import Path
@@ -12,13 +13,31 @@ from PySide6.QtWidgets import QApplication
 if __package__ in {None, ""}:
     # Support direct path execution: `python src/grip_py_demo/main.py`
     src_root = Path(__file__).resolve().parents[1]
-    if str(src_root) not in sys.path:
-        sys.path.insert(0, str(src_root))
+    workspace_root = Path(__file__).resolve().parents[3]
+    for candidate in (
+        src_root,
+        workspace_root / "grip-py" / "src",
+        workspace_root / "glial-local-py" / "src",
+    ):
+        if candidate.exists() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
     from grip_py_demo.demo_runtime import DemoRuntime
+    from grip_py_demo.demo_session import DemoSessionManager
     from grip_py_demo.ui import MainWindow
 else:
     from .demo_runtime import DemoRuntime
+    from .demo_session import DemoSessionManager
     from .ui import MainWindow
+
+LOGGER = logging.getLogger(__name__)
+
+
+def configure_logging() -> None:
+    """Enable INFO-level application logging for demo debugging."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 
 def install_signal_handlers(app: QApplication, window: MainWindow) -> None:
@@ -51,9 +70,12 @@ def install_signal_handlers(app: QApplication, window: MainWindow) -> None:
 
 
 def main() -> int:
+    configure_logging()
     app = QApplication(sys.argv)
-    runtime = DemoRuntime()
-    window = MainWindow(runtime)
+    session_manager = DemoSessionManager()
+    runtime = session_manager.build_current_runtime()
+    LOGGER.info("startup_session_loaded session_id=%s count=%s", runtime.session_id, runtime.get_count())
+    window = MainWindow(runtime, session_manager=session_manager)
     install_signal_handlers(app, window)
     window.resize(980, 680)
     window.show()
