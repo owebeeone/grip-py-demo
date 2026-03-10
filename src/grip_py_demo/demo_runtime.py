@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from glial_local.types import LauncherSessionKind
 from glial_local import GripSessionStore
 from grip_py import (
     Drip,
@@ -18,6 +19,7 @@ from grip_py import (
 )
 
 from .constants import LOCATION_OPTIONS
+from .demo_glial_sync import DemoGlialSessionSync
 from .grips import DemoGrips, ProviderName, REGISTRY, TabName, WeatherGrips
 from .openmeteo_taps import LocationToGeoTap, OpenMeteoWeatherTap
 from .taps import CalculatorTap, ClockTap, FormulaWeatherTap
@@ -47,6 +49,9 @@ class DemoRuntime:
         initial_time: datetime | None = None,
         session_id: str | None = None,
         store: GripSessionStore | None = None,
+        session_kind: LauncherSessionKind = "local",
+        glial_base_url: str | None = None,
+        glial_user_id: str = "demo-user",
     ) -> None:
         if (session_id is None) != (store is None):
             raise ValueError("session_id and store must either both be provided or both be omitted")
@@ -57,6 +62,8 @@ class DemoRuntime:
         self._drips: dict[tuple[str, str], Drip[Any]] = {}
         self.session_id = session_id
         self._session_store = store
+        self._session_kind = session_kind
+        self._glial_sync: DemoGlialSessionSync | None = None
 
         self.main_context = self.grok.main_presentation_context
 
@@ -131,6 +138,26 @@ class DemoRuntime:
                 title="Grip Py Demo",
                 flush_delay_ms=250,
             )
+            if self._session_kind != "local" and glial_base_url is not None:
+                self._glial_sync = DemoGlialSessionSync(
+                    self,
+                    session_id=self.session_id,
+                    title="Grip Py Demo",
+                    base_url=glial_base_url,
+                    user_id=glial_user_id,
+                    session_kind=self._session_kind,
+                )
+                self._glial_sync.start()
+
+    @property
+    def session_store(self) -> GripSessionStore:
+        if self._session_store is None:
+            raise RuntimeError("DemoRuntime was created without a session store")
+        return self._session_store
+
+    @property
+    def session_kind(self) -> LauncherSessionKind:
+        return self._session_kind
 
     def _read(self, grip: Any, *, ctx: GripContext | None = None) -> Any:
         return self.get_or_create_drip(grip, ctx=ctx).get()
@@ -261,12 +288,16 @@ class DemoRuntime:
     def tick(self) -> None:
         self.tick_clock(1)
         self.tick_weather(1)
+        if self._glial_sync is not None:
+            self._glial_sync.sync_now()
 
     def flush_local_persistence(self) -> None:
         self.grok.flush_local_persistence()
 
     def close(self) -> None:
         self.flush_local_persistence()
+        if self._glial_sync is not None:
+            self._glial_sync.stop()
         self.grok.close()
 
 

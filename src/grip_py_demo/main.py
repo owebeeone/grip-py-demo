@@ -18,6 +18,7 @@ if __package__ in {None, ""}:
         src_root,
         workspace_root / "grip-py" / "src",
         workspace_root / "glial-local-py" / "src",
+        workspace_root / "glial-net-py" / "src",
     ):
         if candidate.exists() and str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
@@ -74,7 +75,12 @@ def main() -> int:
     app = QApplication(sys.argv)
     session_manager = DemoSessionManager()
     runtime = session_manager.build_current_runtime()
-    LOGGER.info("startup_session_loaded session_id=%s count=%s", runtime.session_id, runtime.get_count())
+    LOGGER.info(
+        "startup_session_loaded session_id=%s session_kind=%s count=%s",
+        runtime.session_id,
+        runtime.session_kind,
+        runtime.get_count(),
+    )
     window = MainWindow(runtime, session_manager=session_manager)
     install_signal_handlers(app, window)
     window.resize(980, 680)

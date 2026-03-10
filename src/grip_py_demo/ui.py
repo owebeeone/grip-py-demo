@@ -114,20 +114,48 @@ class MainWindow(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
-        session_row = QHBoxLayout()
+        session_row = QVBoxLayout()
+        session_top_row = QHBoxLayout()
         self.current_session_label = QLabel("Current session: -")
-        self.storage_mode_label = QLabel("Storage mode: local")
+        self.current_session_kind_label = QLabel("Session kind: local")
+        self.storage_mode_combo = QComboBox()
+        self.storage_mode_combo.addItems(["local", "remote", "both"])
         self.session_combo = QComboBox()
         self.load_session_button = QPushButton("Load Local Session")
         self.load_session_button.clicked.connect(self._load_selected_session)
         self.new_session_button = QPushButton("New Local Session")
         self.new_session_button.clicked.connect(self._create_new_session)
-        session_row.addWidget(self.current_session_label)
-        session_row.addWidget(self.storage_mode_label)
-        session_row.addStretch(1)
-        session_row.addWidget(self.session_combo)
-        session_row.addWidget(self.load_session_button)
-        session_row.addWidget(self.new_session_button)
+        session_top_row.addWidget(self.current_session_label)
+        session_top_row.addWidget(self.current_session_kind_label)
+        session_top_row.addWidget(QLabel("Storage mode:"))
+        session_top_row.addWidget(self.storage_mode_combo)
+        session_top_row.addStretch(1)
+        session_top_row.addWidget(self.session_combo)
+        session_top_row.addWidget(self.load_session_button)
+        session_top_row.addWidget(self.new_session_button)
+        session_row.addLayout(session_top_row)
+
+        shared_row = QHBoxLayout()
+        self.shared_session_combo = QComboBox()
+        self.load_shared_button = QPushButton("Load Glial Shared Session")
+        self.load_shared_button.clicked.connect(self._load_selected_shared_session)
+        self.new_shared_button = QPushButton("New Glial Shared Session")
+        self.new_shared_button.clicked.connect(self._create_new_shared_session)
+        shared_row.addWidget(self.shared_session_combo)
+        shared_row.addWidget(self.load_shared_button)
+        shared_row.addWidget(self.new_shared_button)
+        session_row.addLayout(shared_row)
+
+        storage_row = QHBoxLayout()
+        self.storage_session_combo = QComboBox()
+        self.load_storage_button = QPushButton("Load Glial Storage Session")
+        self.load_storage_button.clicked.connect(self._load_selected_storage_session)
+        self.new_storage_button = QPushButton("New Glial Storage Session")
+        self.new_storage_button.clicked.connect(self._create_new_storage_session)
+        storage_row.addWidget(self.storage_session_combo)
+        storage_row.addWidget(self.load_storage_button)
+        storage_row.addWidget(self.new_storage_button)
+        session_row.addLayout(storage_row)
         root.addLayout(session_row)
 
         header = QHBoxLayout()
@@ -414,12 +442,23 @@ class MainWindow(QWidget):
     def _refresh_session_controls(self) -> None:
         current_session_id = self._runtime.session_id or "-"
         self.current_session_label.setText(f"Current session: {current_session_id}")
-        self.storage_mode_label.setText("Storage mode: local")
         if self._session_manager is None:
             self.session_combo.setEnabled(False)
             self.load_session_button.setEnabled(False)
             self.new_session_button.setEnabled(False)
+            self.shared_session_combo.setEnabled(False)
+            self.load_shared_button.setEnabled(False)
+            self.new_shared_button.setEnabled(False)
+            self.storage_session_combo.setEnabled(False)
+            self.load_storage_button.setEnabled(False)
+            self.new_storage_button.setEnabled(False)
             return
+        current_session = self._session_manager.ensure_current_session()
+        self.current_session_kind_label.setText(f"Session kind: {current_session.session_kind}")
+        storage_mode = current_session.storage_mode
+        mode_index = self.storage_mode_combo.findText(storage_mode)
+        if mode_index >= 0:
+            self.storage_mode_combo.setCurrentIndex(mode_index)
         sessions = self._session_manager.list_local_sessions()
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
@@ -440,6 +479,31 @@ class MainWindow(QWidget):
         self.session_combo.setEnabled(has_selection)
         self.load_session_button.setEnabled(has_selection)
         self.new_session_button.setEnabled(True)
+        try:
+            remote_sessions = self._session_manager.list_remote_sessions()
+        except Exception:
+            remote_sessions = []
+        self.shared_session_combo.blockSignals(True)
+        self.storage_session_combo.blockSignals(True)
+        self.shared_session_combo.clear()
+        self.storage_session_combo.clear()
+        for session in remote_sessions:
+            label = (
+                f"{session.title} ({session.session_id})"
+                if session.title
+                else session.session_id
+            )
+            self.shared_session_combo.addItem(label, session.session_id)
+            self.storage_session_combo.addItem(label, session.session_id)
+        self.shared_session_combo.blockSignals(False)
+        self.storage_session_combo.blockSignals(False)
+        has_remote = bool(remote_sessions)
+        self.shared_session_combo.setEnabled(has_remote)
+        self.load_shared_button.setEnabled(has_remote)
+        self.new_shared_button.setEnabled(True)
+        self.storage_session_combo.setEnabled(has_remote)
+        self.load_storage_button.setEnabled(has_remote)
+        self.new_storage_button.setEnabled(True)
 
     def _swap_runtime(self, runtime: DemoRuntime) -> None:
         previous_runtime = self._runtime
@@ -479,6 +543,74 @@ class MainWindow(QWidget):
             return
         session = self._session_manager.create_and_select_new_local_session()
         self._swap_runtime(self._session_manager.build_runtime(session.glial_session_id))
+
+    def _selected_storage_mode(self) -> str:
+        mode = self.storage_mode_combo.currentText().strip()
+        return mode if mode in {"local", "remote", "both"} else "local"
+
+    def _load_selected_shared_session(self) -> None:
+        if self._session_manager is None:
+            return
+        session_id = self.shared_session_combo.currentData()
+        if not isinstance(session_id, str) or not session_id:
+            return
+        session = self._session_manager.select_remote_session(
+            session_id,
+            session_kind="glial-shared",
+            storage_mode=self._selected_storage_mode(),
+        )
+        self._swap_runtime(
+            self._session_manager.build_runtime(
+                session.glial_session_id,
+                session_kind="glial-shared",
+            )
+        )
+
+    def _create_new_shared_session(self) -> None:
+        if self._session_manager is None:
+            return
+        session = self._session_manager.create_and_select_new_remote_session(
+            session_kind="glial-shared",
+            storage_mode=self._selected_storage_mode(),
+        )
+        self._swap_runtime(
+            self._session_manager.build_runtime(
+                session.glial_session_id,
+                session_kind="glial-shared",
+            )
+        )
+
+    def _load_selected_storage_session(self) -> None:
+        if self._session_manager is None:
+            return
+        session_id = self.storage_session_combo.currentData()
+        if not isinstance(session_id, str) or not session_id:
+            return
+        session = self._session_manager.select_remote_session(
+            session_id,
+            session_kind="glial-storage",
+            storage_mode=self._selected_storage_mode(),
+        )
+        self._swap_runtime(
+            self._session_manager.build_runtime(
+                session.glial_session_id,
+                session_kind="glial-storage",
+            )
+        )
+
+    def _create_new_storage_session(self) -> None:
+        if self._session_manager is None:
+            return
+        session = self._session_manager.create_and_select_new_remote_session(
+            session_kind="glial-storage",
+            storage_mode=self._selected_storage_mode(),
+        )
+        self._swap_runtime(
+            self._session_manager.build_runtime(
+                session.glial_session_id,
+                session_kind="glial-storage",
+            )
+        )
 
     def closeEvent(self, event):  # type: ignore[override]
         self._timer.stop()
