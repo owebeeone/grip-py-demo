@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from time import time
 from typing import Any, cast
+from typing import Callable, Protocol
 
 from glial_net import HttpGlialClient
 from glial_local.types import ContextState, DripState, SessionSnapshot, TapExport
@@ -14,6 +16,34 @@ from grip_py.core.local_persistence import (
 
 if False:  # pragma: no cover
     from .demo_runtime import DemoRuntime
+
+
+class DemoGlialSyncClient(Protocol):
+    def load_remote_session(self, user_id: str, session_id: str) -> dict[str, Any]: ...
+
+    def save_remote_session(
+        self,
+        user_id: str,
+        session_id: str,
+        snapshot: dict[str, Any],
+        *,
+        title: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def save_shared_session(
+        self,
+        user_id: str,
+        session_id: str,
+        snapshot: dict[str, Any],
+        *,
+        title: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def close(self) -> None: ...
+
+
+def _now_ms() -> int:
+    return int(time() * 1000)
 
 
 def _tap_from_dict(data: dict[str, Any]) -> TapExport:
@@ -85,18 +115,27 @@ class DemoGlialSessionSync:
         base_url: str,
         user_id: str,
         session_kind: str,
+        client: DemoGlialSyncClient | None = None,
+        remote_poll_min_ms: int = 1000,
+        remote_poll_max_ms: int = 5000,
+        now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._runtime = runtime
         self._store = runtime.session_store
         self._session_id = session_id
         self._title = title
-        self._client = HttpGlialClient(base_url=base_url)
+        self._client = client or HttpGlialClient(base_url=base_url)
         self._user_id = user_id
         self._session_kind = session_kind
         self._last_remote_modified_ms = 0
         self._last_applied_signature = ""
         self._last_shared_signature = ""
         self._syncing = False
+        self._remote_poll_min_ms = remote_poll_min_ms
+        self._remote_poll_max_ms = max(remote_poll_min_ms, remote_poll_max_ms)
+        self._current_remote_poll_ms = self._remote_poll_min_ms
+        self._next_remote_poll_at_ms = 0
+        self._now_ms = now_ms or _now_ms
 
     def start(self) -> None:
         local_snapshot = self._read_local_snapshot()
@@ -115,6 +154,7 @@ class DemoGlialSessionSync:
                 title=self._title,
             )
             self._last_remote_modified_ms = int(saved["last_modified_ms"])
+            self._reset_remote_poll_backoff()
             if self._session_kind == "glial-shared":
                 self._save_shared_snapshot()
             return
@@ -125,6 +165,7 @@ class DemoGlialSessionSync:
         if remote_signature != self._last_applied_signature:
             self._apply_remote_snapshot(remote_snapshot)
             self._last_applied_signature = remote_signature
+        self._reset_remote_poll_backoff()
         if self._session_kind == "glial-shared":
             self._save_shared_snapshot()
 
@@ -135,8 +176,13 @@ class DemoGlialSessionSync:
         try:
             local_snapshot = self._read_local_snapshot()
             local_signature = _stable_snapshot_signature(local_snapshot)
+            has_unsynced_local_changes = local_signature != self._last_applied_signature
 
-            if self._session_kind == "glial-shared":
+            if (
+                self._session_kind == "glial-shared"
+                and not has_unsynced_local_changes
+                and self._should_poll_remote()
+            ):
                 try:
                     remote = self._client.load_remote_session(self._user_id, self._session_id)
                     remote_modified_ms = int(remote["last_modified_ms"])
@@ -149,13 +195,16 @@ class DemoGlialSessionSync:
                         self._apply_remote_snapshot(remote_snapshot)
                         self._last_remote_modified_ms = remote_modified_ms
                         self._last_applied_signature = remote_signature
+                        self._reset_remote_poll_backoff()
                         return
                     self._last_remote_modified_ms = max(self._last_remote_modified_ms, remote_modified_ms)
+                    self._bump_remote_poll_backoff()
                 except Exception as error:
                     if not _is_missing_remote_session_error(error):
                         raise
+                    self._reset_remote_poll_backoff()
 
-            if local_signature == self._last_applied_signature:
+            if not has_unsynced_local_changes:
                 return
 
             saved = self._client.save_remote_session(
@@ -166,6 +215,7 @@ class DemoGlialSessionSync:
             )
             self._last_remote_modified_ms = int(saved["last_modified_ms"])
             self._last_applied_signature = local_signature
+            self._reset_remote_poll_backoff()
             if self._session_kind == "glial-shared":
                 self._save_shared_snapshot()
         finally:
@@ -201,3 +251,17 @@ class DemoGlialSessionSync:
             title=self._title,
         )
         self._last_shared_signature = shared_signature
+
+    def _should_poll_remote(self) -> bool:
+        return self._now_ms() >= self._next_remote_poll_at_ms
+
+    def _reset_remote_poll_backoff(self) -> None:
+        self._current_remote_poll_ms = self._remote_poll_min_ms
+        self._next_remote_poll_at_ms = self._now_ms() + self._current_remote_poll_ms
+
+    def _bump_remote_poll_backoff(self) -> None:
+        self._current_remote_poll_ms = min(
+            self._remote_poll_max_ms,
+            self._current_remote_poll_ms * 2,
+        )
+        self._next_remote_poll_at_ms = self._now_ms() + self._current_remote_poll_ms

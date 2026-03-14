@@ -87,20 +87,47 @@ class DemoSessionManager:
         )
         return self._wrap_record(record)
 
+    def ensure_runnable_current_session(self) -> DemoLauncherSession:
+        session = self.ensure_current_session()
+        if session.session_kind == "local":
+            return session
+        client = self._create_glial_client()
+        try:
+            client.load_remote_session(self._glial_user_id, session.glial_session_id)
+            return session
+        except Exception:
+            return self._downgrade_launcher_session_to_local(session)
+        finally:
+            self._close_glial_client(client)
+
     def list_local_sessions(self) -> list[SessionSummary]:
         return self._store.list_sessions()
 
     def list_remote_sessions(self) -> list[SessionSummary]:
-        sessions = self._create_glial_client().list_remote_sessions(self._glial_user_id)
-        return [
-            SessionSummary(
-                session_id=str(session["session_id"]),
-                title=session.get("title"),
-                mode="shared",
-                last_modified_ms=int(session["last_modified_ms"]),
-            )
-            for session in sessions
-        ]
+        client = self._create_glial_client()
+        try:
+            sessions = client.list_remote_sessions(self._glial_user_id)
+            return [
+                SessionSummary(
+                    session_id=str(session["session_id"]),
+                    title=session.get("title"),
+                    mode="shared",
+                    last_modified_ms=int(session["last_modified_ms"]),
+                )
+                for session in sessions
+            ]
+        finally:
+            self._close_glial_client(client)
+
+    def probe_glial_availability(self) -> bool:
+        client = self._create_glial_client()
+        try:
+            client.list_remote_sessions(self._glial_user_id)
+            return True
+        except Exception:
+            return False
+        finally:
+            self._close_glial_client(client)
 
     def select_local_session(self, glial_session_id: str) -> DemoLauncherSession:
         launcher_session_id = self._get_or_create_launcher_session_id()
@@ -136,10 +163,14 @@ class DemoSessionManager:
         storage_mode: LauncherSessionStorageMode,
     ) -> DemoLauncherSession:
         launcher_session_id = self._get_or_create_launcher_session_id()
-        remote = self._create_glial_client().load_remote_session(
-            self._glial_user_id,
-            glial_session_id,
-        )
+        client = self._create_glial_client()
+        try:
+            remote = client.load_remote_session(
+                self._glial_user_id,
+                glial_session_id,
+            )
+        finally:
+            self._close_glial_client(client)
         if self._store.get_session(glial_session_id) is None:
             self._store.new_session(
                 NewSessionRequest(
@@ -167,12 +198,16 @@ class DemoSessionManager:
         launcher_session_id = self._get_or_create_launcher_session_id()
         session = self._store.new_session(NewSessionRequest(title="Grip Py Demo (Glial)"))
         hydrated = self._store.hydrate(session.session_id)
-        remote = self._create_glial_client().save_remote_session(
-            self._glial_user_id,
-            session.session_id,
-            asdict(hydrated.snapshot),
-            title=session.title or "Grip Py Demo (Glial)",
-        )
+        client = self._create_glial_client()
+        try:
+            remote = client.save_remote_session(
+                self._glial_user_id,
+                session.session_id,
+                asdict(hydrated.snapshot),
+                title=session.title or "Grip Py Demo (Glial)",
+            )
+        finally:
+            self._close_glial_client(client)
         record = LauncherSessionRecord(
             launcher_session_id=launcher_session_id,
             glial_session_id=session.session_id,
@@ -185,7 +220,7 @@ class DemoSessionManager:
         return self._wrap_record(record)
 
     def build_current_runtime(self, *, initial_time: datetime | None = None):
-        session = self.ensure_current_session()
+        session = self.ensure_runnable_current_session()
         return self.build_runtime(
             session.glial_session_id,
             initial_time=initial_time,
@@ -237,3 +272,28 @@ class DemoSessionManager:
 
     def _create_glial_client(self) -> HttpGlialClient:
         return HttpGlialClient(base_url=self._glial_base_url)
+
+    def _downgrade_launcher_session_to_local(
+        self,
+        session: DemoLauncherSession,
+    ) -> DemoLauncherSession:
+        local_session = self._store.get_session(session.glial_session_id)
+        if local_session is None:
+            local_session = self._store.new_session(
+                NewSessionRequest(
+                    session_id=session.glial_session_id,
+                    title=session.title or "Grip Py Demo",
+                )
+            )
+        record = bind_launcher_session_to_existing_session(
+            self._store,
+            session.launcher_session_id,
+            local_session,
+            "local",
+            "local",
+        )
+        return self._wrap_record(record)
+
+    @staticmethod
+    def _close_glial_client(client: HttpGlialClient) -> None:
+        client.close()

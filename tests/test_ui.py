@@ -228,3 +228,26 @@ def test_switching_away_does_not_overwrite_previous_session_after_flush_delay(tm
     assert window._runtime.get_count() == 7
     window.close()
     app.processEvents()
+
+
+def test_remote_controls_are_disabled_when_glial_is_unavailable(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    manager = DemoSessionManager(base_path=tmp_path)
+    monkeypatch.setattr(manager, "probe_glial_availability", lambda: False)
+
+    runtime = manager.build_current_runtime()
+    window = MainWindow(runtime, session_manager=manager)
+    window.show()
+    app.processEvents()
+
+    assert "Glial server unavailable" in window.glial_status_label.text()
+    assert not window.storage_mode_combo.isEnabled()
+    assert not window.shared_session_combo.isEnabled()
+    assert not window.load_shared_button.isEnabled()
+    assert not window.new_shared_button.isEnabled()
+    assert not window.storage_session_combo.isEnabled()
+    assert not window.load_storage_button.isEnabled()
+    assert not window.new_storage_button.isEnabled()
+    window.close()
+    app.processEvents()

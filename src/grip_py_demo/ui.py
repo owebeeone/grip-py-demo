@@ -134,6 +134,9 @@ class MainWindow(QWidget):
         session_top_row.addWidget(self.load_session_button)
         session_top_row.addWidget(self.new_session_button)
         session_row.addLayout(session_top_row)
+        self.glial_status_label = QLabel("")
+        self.glial_status_label.setStyleSheet("color: #8a3b12;")
+        session_row.addWidget(self.glial_status_label)
 
         shared_row = QHBoxLayout()
         self.shared_session_combo = QComboBox()
@@ -443,6 +446,7 @@ class MainWindow(QWidget):
         current_session_id = self._runtime.session_id or "-"
         self.current_session_label.setText(f"Current session: {current_session_id}")
         if self._session_manager is None:
+            self.glial_status_label.setText("Glial controls unavailable.")
             self.session_combo.setEnabled(False)
             self.load_session_button.setEnabled(False)
             self.new_session_button.setEnabled(False)
@@ -456,9 +460,18 @@ class MainWindow(QWidget):
         current_session = self._session_manager.ensure_current_session()
         self.current_session_kind_label.setText(f"Session kind: {current_session.session_kind}")
         storage_mode = current_session.storage_mode
+        glial_available = self._session_manager.probe_glial_availability()
+        if glial_available:
+            self.glial_status_label.setText("")
+        else:
+            self.glial_status_label.setText(
+                "Glial server unavailable. Remote session controls are disabled; local mode still works."
+            )
+            storage_mode = "local"
         mode_index = self.storage_mode_combo.findText(storage_mode)
         if mode_index >= 0:
             self.storage_mode_combo.setCurrentIndex(mode_index)
+        self.storage_mode_combo.setEnabled(glial_available)
         sessions = self._session_manager.list_local_sessions()
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
@@ -479,10 +492,7 @@ class MainWindow(QWidget):
         self.session_combo.setEnabled(has_selection)
         self.load_session_button.setEnabled(has_selection)
         self.new_session_button.setEnabled(True)
-        try:
-            remote_sessions = self._session_manager.list_remote_sessions()
-        except Exception:
-            remote_sessions = []
+        remote_sessions = self._session_manager.list_remote_sessions() if glial_available else []
         self.shared_session_combo.blockSignals(True)
         self.storage_session_combo.blockSignals(True)
         self.shared_session_combo.clear()
@@ -498,12 +508,12 @@ class MainWindow(QWidget):
         self.shared_session_combo.blockSignals(False)
         self.storage_session_combo.blockSignals(False)
         has_remote = bool(remote_sessions)
-        self.shared_session_combo.setEnabled(has_remote)
-        self.load_shared_button.setEnabled(has_remote)
-        self.new_shared_button.setEnabled(True)
-        self.storage_session_combo.setEnabled(has_remote)
-        self.load_storage_button.setEnabled(has_remote)
-        self.new_storage_button.setEnabled(True)
+        self.shared_session_combo.setEnabled(glial_available and has_remote)
+        self.load_shared_button.setEnabled(glial_available and has_remote)
+        self.new_shared_button.setEnabled(glial_available)
+        self.storage_session_combo.setEnabled(glial_available and has_remote)
+        self.load_storage_button.setEnabled(glial_available and has_remote)
+        self.new_storage_button.setEnabled(glial_available)
 
     def _swap_runtime(self, runtime: DemoRuntime) -> None:
         previous_runtime = self._runtime

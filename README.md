@@ -57,6 +57,8 @@ PYTHONPATH=./grip-py/src python ./grip-py-demo/src/grip_py_demo/main.py
 Notes:
 - Use `:` to separate `PYTHONPATH` entries on macOS/Linux.
 - `Ctrl-C` (`SIGINT`) is handled for clean shutdown.
+- Local-only demo mode works without a Glial server.
+- Glial-backed shared/storage sessions are optional and only require `GLIAL_BASE_URL` when you want those remote features.
 
 ## Test
 
