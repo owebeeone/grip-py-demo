@@ -22,6 +22,9 @@ dev = [
 [project.scripts]
 grip-py-demo = "grip_py_demo.main:main"
 
+[tool.uv.sources]
+grip-py = { path = "../grip-py", editable = true }
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/grip_py_demo"]
 
