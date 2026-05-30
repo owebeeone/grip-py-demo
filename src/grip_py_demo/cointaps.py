@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import math
 import time
 from collections.abc import AsyncIterable
@@ -21,6 +23,12 @@ from grip_py import (
 
 from .grips import CoinGrips
 
+try:
+    import websockets
+except ImportError:  # pragma: no cover - exercised only in missing optional dep envs
+    websockets = None
+
+LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class CoinTick:
@@ -55,6 +63,26 @@ def create_unavailable_coin_tap(grips: type[CoinGrips], *, exchange: str) -> Tap
     )
 
 
+def create_coinbase_coin_tap(grips: type[CoinGrips]) -> Tap:
+    """Create Coinbase public ticker websocket tap."""
+    return _create_coin_stream_tap(
+        grips,
+        exchange="Coinbase",
+        stream=lambda product, cancel_event: _coinbase_stream(product, cancel_event),
+        retry=AsyncStreamRetryConfig(initial_delay_ms=1000, max_delay_ms=30_000, jitter_ratio=0.5),
+    )
+
+
+def create_binance_coin_tap(grips: type[CoinGrips]) -> Tap:
+    """Create Binance public ticker websocket tap."""
+    return _create_coin_stream_tap(
+        grips,
+        exchange="Binance",
+        stream=lambda product, cancel_event: _binance_stream(product, cancel_event),
+        retry=AsyncStreamRetryConfig(initial_delay_ms=1000, max_delay_ms=30_000, jitter_ratio=0.5),
+    )
+
+
 def _create_coin_stream_tap(
     grips: type[CoinGrips],
     *,
@@ -79,8 +107,11 @@ def _create_coin_stream_tap(
         get_reset_updates=lambda _params: _reset_updates(grips),
         cleanup_delay_ms=250,
         retry=retry,
-        on_error=lambda error, request_key: print(
-            f"[{exchange}] stream error for {request_key}: {error}"
+        on_error=lambda error, request_key: LOGGER.warning(
+            "%s stream error for %s: %s",
+            exchange,
+            request_key,
+            error,
         ),
     )
 
@@ -125,6 +156,96 @@ async def _unavailable_stream(
         status="unavailable",
         updated_at=datetime.now().replace(microsecond=0),
     )
+
+
+async def _coinbase_stream(
+    product: str | None,
+    cancel_event: asyncio.Event,
+) -> AsyncIterable[CoinTick]:
+    if websockets is None:
+        raise RuntimeError("websockets package is required for Coinbase streams")
+
+    product_id = (product or "BTC-USD").upper()
+    url = "wss://ws-feed.exchange.coinbase.com"
+    LOGGER.info("Coinbase stream connecting: product=%s url=%s", product_id, url)
+    yield CoinTick(
+        price_usd=None,
+        volume=None,
+        exchange="Coinbase",
+        status="connecting",
+        updated_at=datetime.now().replace(microsecond=0),
+    )
+
+    async with websockets.connect(url) as websocket:
+        subscribe = {
+            "type": "subscribe",
+            "product_ids": [product_id],
+            "channels": ["ticker"],
+        }
+        LOGGER.info("Coinbase stream subscribe: %s", subscribe)
+        await websocket.send(json.dumps(subscribe))
+        while not cancel_event.is_set():
+            try:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+            except TimeoutError:
+                continue
+            message = json.loads(raw)
+            if message.get("type") != "ticker":
+                LOGGER.debug("Coinbase ignored message: %s", message.get("type"))
+                continue
+            price = _to_float(message.get("price"))
+            if price is None:
+                LOGGER.warning("Coinbase ticker missing price: %s", message)
+                continue
+            volume = _to_float(message.get("last_size")) or _to_float(message.get("volume_24h"))
+            LOGGER.debug("Coinbase ticker: product=%s price=%s volume=%s", product_id, price, volume)
+            yield CoinTick(
+                price_usd=price,
+                volume=volume or 0,
+                exchange="Coinbase",
+                status="streaming",
+                updated_at=_parse_coinbase_time(message.get("time")),
+            )
+
+
+async def _binance_stream(
+    product: str | None,
+    cancel_event: asyncio.Event,
+) -> AsyncIterable[CoinTick]:
+    if websockets is None:
+        raise RuntimeError("websockets package is required for Binance streams")
+
+    stream_name = f"{_binance_symbol(product or 'BTC-USD').lower()}@ticker"
+    url = f"wss://stream.binance.com:9443/ws/{stream_name}"
+    LOGGER.info("Binance stream connecting: product=%s url=%s", product, url)
+    yield CoinTick(
+        price_usd=None,
+        volume=None,
+        exchange="Binance",
+        status="connecting",
+        updated_at=datetime.now().replace(microsecond=0),
+    )
+
+    async with websockets.connect(url) as websocket:
+        while not cancel_event.is_set():
+            try:
+                raw = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+            except TimeoutError:
+                continue
+            message = json.loads(raw)
+            price = _to_float(message.get("c"))
+            if price is None:
+                LOGGER.warning("Binance ticker missing price: %s", message)
+                continue
+            volume = _to_float(message.get("v")) or 0
+            LOGGER.debug("Binance ticker: stream=%s price=%s volume=%s", stream_name, price, volume)
+            yield CoinTick(
+                price_usd=price,
+                volume=volume,
+                exchange="Binance",
+                status="streaming",
+                updated_at=_datetime_from_epoch_ms(message.get("E")),
+            )
 
 
 def _product_from_params(params: AsyncStreamTapParams, grips: type[CoinGrips]) -> str | None:
@@ -172,6 +293,38 @@ def _base_price(product: str) -> float:
     return 100
 
 
+def _binance_symbol(product: str) -> str:
+    compact = product.upper().replace("-", "").replace("_", "").replace("/", "")
+    if compact.endswith("USD"):
+        return f"{compact[:-3]}USDT"
+    return compact
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_coinbase_time(value: Any) -> datetime:
+    if not value:
+        return datetime.now().replace(microsecond=0)
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return datetime.now().replace(microsecond=0)
+
+
+def _datetime_from_epoch_ms(value: Any) -> datetime:
+    try:
+        return datetime.fromtimestamp(float(value) / 1000).replace(microsecond=0)
+    except (TypeError, ValueError):
+        return datetime.now().replace(microsecond=0)
+
+
 class MockCoinTapFactory:
     """Build mock coin stream taps for matcher-managed contexts."""
 
@@ -209,3 +362,41 @@ class UnavailableCoinTapFactory:
 
     def build(self) -> Tap:
         return create_unavailable_coin_tap(self._grips, exchange=self._exchange)
+
+
+class CoinbaseCoinTapFactory:
+    """Build Coinbase stream taps."""
+
+    provides: tuple[Grip[Any], ...]
+
+    def __init__(self, grips: type[CoinGrips]) -> None:
+        self._grips = grips
+        self.provides = (
+            grips.COIN_PRICE_USD,
+            grips.COIN_VOLUME,
+            grips.COIN_EXCHANGE,
+            grips.COIN_STATUS,
+            grips.COIN_UPDATED_AT,
+        )
+
+    def build(self) -> Tap:
+        return create_coinbase_coin_tap(self._grips)
+
+
+class BinanceCoinTapFactory:
+    """Build Binance stream taps."""
+
+    provides: tuple[Grip[Any], ...]
+
+    def __init__(self, grips: type[CoinGrips]) -> None:
+        self._grips = grips
+        self.provides = (
+            grips.COIN_PRICE_USD,
+            grips.COIN_VOLUME,
+            grips.COIN_EXCHANGE,
+            grips.COIN_STATUS,
+            grips.COIN_UPDATED_AT,
+        )
+
+    def build(self) -> Tap:
+        return create_binance_coin_tap(self._grips)

@@ -59,7 +59,8 @@ def clock_panel(runtime: DemoRuntime) -> None:
     current_time = use_grip(runtime.grips.CURRENT_TIME, runtime.main_context)
     page_size = use_grip(runtime.grips.PAGE_SIZE, runtime.main_context)
     description = use_grip(runtime.grips.DESCRIPTION, runtime.main_context)
-    count = int(use_grip(runtime.grips.COUNT, runtime.main_context) or 0)
+    count_value = use_grip(runtime.grips.COUNT, runtime.main_context)
+    count = int(count_value or 0)
 
     with Qt.CQVBoxLayout(objectName="clock:panel"):
         if isinstance(current_time, datetime) and count % 2 == 0:
@@ -79,7 +80,8 @@ def clock_panel(runtime: DemoRuntime) -> None:
 
 @pyrolyze
 def calculator_panel(runtime: DemoRuntime) -> None:
-    display = use_grip(runtime.grips.CALC_DISPLAY, runtime.main_context) or "0"
+    display_value = use_grip(runtime.grips.CALC_DISPLAY, runtime.main_context)
+    display = display_value or "0"
     with Qt.CQVBoxLayout(objectName="calc:panel"):
         Qt.CQLabel(
             str(display),
@@ -137,7 +139,8 @@ def weather_column(runtime: DemoRuntime, column: str, title: str) -> None:
 
 @pyrolyze
 def weather_panel(runtime: DemoRuntime) -> None:
-    provider = use_grip(runtime.grips.WEATHER_PROVIDER_NAME, runtime.main_context) or "meteo"
+    provider_value = use_grip(runtime.grips.WEATHER_PROVIDER_NAME, runtime.main_context)
+    provider = provider_value or "meteo"
 
     with Qt.CQVBoxLayout(objectName="weather:panel"):
         with Qt.CQHBoxLayout(objectName="weather:provider_row"):
@@ -162,7 +165,8 @@ def weather_panel(runtime: DemoRuntime) -> None:
 
 @pyrolyze
 def grip_pyrolyze_demo_app(runtime: DemoRuntime) -> None:
-    current_tab = use_grip(runtime.grips.CURRENT_TAB, runtime.main_context) or "clock"
+    current_tab_value = use_grip(runtime.grips.CURRENT_TAB, runtime.main_context)
+    current_tab = current_tab_value or "clock"
 
     with Qt.CQMainWindow(
         windowTitle="Grip PyRolyze Demo",

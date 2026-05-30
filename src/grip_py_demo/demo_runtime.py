@@ -19,10 +19,11 @@ from grip_py import (
 
 from .constants import LOCATION_OPTIONS
 from .cointaps import (
+    BinanceCoinTapFactory,
     COIN_PRODUCTS,
     COIN_SOURCES,
+    CoinbaseCoinTapFactory,
     MockCoinTapFactory,
-    UnavailableCoinTapFactory,
 )
 from .grips import CoinGrips, CoinSource, DemoGrips, ProviderName, REGISTRY, TabName, WeatherGrips
 from .openmeteo_taps import LocationToGeoTap, OpenMeteoWeatherTap
@@ -154,7 +155,7 @@ class DemoRuntime:
                 QueryBinding(
                     id=f"coin-{column}-coinbase",
                     query=with_one_of(self.coin_grips.COIN_SOURCE, "coinbase").build(),
-                    tap=UnavailableCoinTapFactory(self.coin_grips, exchange="Coinbase"),
+                    tap=CoinbaseCoinTapFactory(self.coin_grips),
                     base_score=5,
                 )
             )
@@ -162,7 +163,7 @@ class DemoRuntime:
                 QueryBinding(
                     id=f"coin-{column}-binance",
                     query=with_one_of(self.coin_grips.COIN_SOURCE, "binance").build(),
-                    tap=UnavailableCoinTapFactory(self.coin_grips, exchange="Binance"),
+                    tap=BinanceCoinTapFactory(self.coin_grips),
                     base_score=5,
                 )
             )

@@ -14,6 +14,7 @@ dependencies = [
   "httpx>=0.27",
   "PySide6>=6.6",
   "pyrolyze",
+  "websockets>=13",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,9 @@ dev = [
 [project.scripts]
 grip-py-demo = "grip_py_demo.main:main"
 grip-pyrolyze-demo = "grip_pyrolyze_demo.main:main"
+
+[tool.uv]
+exclude-newer = "1 week"
 
 [tool.uv.sources]
 grip-py = { path = "../grip-py", editable = true }

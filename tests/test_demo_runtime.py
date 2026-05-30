@@ -213,7 +213,44 @@ def test_meteo_reads_do_not_block_on_slow_network(monkeypatch) -> None:
     assert snapshot.location_label in {"Sydney", ""}
 
 
-def test_coin_stream_contexts_are_independent_and_provider_selectable() -> None:
+def test_coin_stream_contexts_are_independent_and_provider_selectable(monkeypatch) -> None:
+    import asyncio
+
+    from grip_py import create_async_stream_multi_tap
+    from grip_py_demo import demo_runtime as demo_runtime_module
+
+    class FakeBinanceFactory:
+        def __init__(self, grips: type[CoinGrips]) -> None:
+            self._grips = grips
+            self.provides = (
+                grips.COIN_PRICE_USD,
+                grips.COIN_VOLUME,
+                grips.COIN_EXCHANGE,
+                grips.COIN_STATUS,
+                grips.COIN_UPDATED_AT,
+            )
+
+        def build(self):
+            async def stream(_params, _cancel_event):
+                yield {
+                    self._grips.COIN_PRICE_USD: 123.45,
+                    self._grips.COIN_VOLUME: 6.7,
+                    self._grips.COIN_EXCHANGE: "Binance",
+                    self._grips.COIN_STATUS: "streaming",
+                    self._grips.COIN_UPDATED_AT: None,
+                }
+                await asyncio.sleep(0)
+
+            return create_async_stream_multi_tap(
+                provides=self.provides,
+                destination_param_grips=(self._grips.COIN_PRODUCT,),
+                request_key_of=lambda params: str(params.destination_params[self._grips.COIN_PRODUCT]),
+                subscribe=stream,
+                map_event=lambda _params, event: event,
+                cleanup_delay_ms=0,
+            )
+
+    monkeypatch.setattr(demo_runtime_module, "BinanceCoinTapFactory", FakeBinanceFactory)
     runtime = DemoRuntime()
 
     runtime.set_tab("coins")
@@ -249,4 +286,4 @@ def test_coin_stream_contexts_are_independent_and_provider_selectable() -> None:
     binance_b = runtime.get_coin_snapshot("B")
     assert binance_b.source == "binance"
     assert binance_b.exchange == "Binance"
-    assert binance_b.status == "unavailable"
+    assert binance_b.status == "streaming"

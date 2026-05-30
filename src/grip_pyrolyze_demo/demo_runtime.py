@@ -16,8 +16,10 @@ from grip_py import (
     with_one_of,
 )
 
+from grip_pyrolyze import GRIP_DEFAULT_REGISTRY, use_grip_child_context
+
 from .constants import LOCATION_OPTIONS
-from .grips import DemoGrips, ProviderName, REGISTRY, TabName, WeatherGrips
+from .grips import DemoGrips, ProviderName, TabName, WeatherGrips
 from .openmeteo_taps import LocationToGeoTap, OpenMeteoWeatherTap
 from .taps import CalculatorTap, ClockTap, FormulaWeatherTap
 
@@ -41,7 +43,7 @@ class DemoRuntime:
     location_options = LOCATION_OPTIONS
 
     def __init__(self, *, initial_time: datetime | None = None) -> None:
-        self.registry = REGISTRY
+        self.registry = GRIP_DEFAULT_REGISTRY
         self.grips = DemoGrips
         self.weather_grips = WeatherGrips
         self.grok = Grok(self.registry)
@@ -95,7 +97,7 @@ class DemoRuntime:
             )
         )
 
-        self.header_context = self.main_context.create_child()
+        self.header_context = use_grip_child_context("header", ctx=self.main_context)
         self.header_location_tap = create_atom_value_tap(
             self.weather_grips.WEATHER_LOCATION,
             initial="Sydney",
@@ -103,8 +105,8 @@ class DemoRuntime:
         self.header_context.register_tap(self.header_location_tap)
 
         self.column_contexts: dict[str, GripContext] = {
-            "A": self.main_context.create_child(),
-            "B": self.main_context.create_child(),
+            "A": use_grip_child_context("weather:A", ctx=self.main_context),
+            "B": use_grip_child_context("weather:B", ctx=self.main_context),
         }
         self.location_taps = {
             "A": create_atom_value_tap(self.weather_grips.WEATHER_LOCATION, initial="Sydney"),
