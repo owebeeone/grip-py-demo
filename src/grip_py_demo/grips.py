@@ -8,8 +8,9 @@ from typing import Literal
 
 from grip_py import Grip, GripRegistry
 
-TabName = Literal["clock", "calc", "weather"]
+TabName = Literal["clock", "calc", "weather", "coins"]
 ProviderName = Literal["meteo", "mock"]
+CoinSource = Literal["mock", "coinbase", "binance"]
 
 REGISTRY = GripRegistry()
 
@@ -104,3 +105,24 @@ class WeatherGrips:
         value_type=float,
     )
     GEO_LABEL: Grip[str] = REGISTRY.add("Geo.Label", "")
+
+
+class CoinGrips:
+    """Coin stream grips defined once as class-level constants."""
+
+    COIN_SOURCE: Grip[CoinSource] = REGISTRY.add("Coin.Source", "mock")
+    COIN_PRODUCT: Grip[str] = REGISTRY.add("Coin.Product", "BTC-USD")
+    COIN_PRICE_USD: Grip[float | None] = REGISTRY.add(
+        "Coin.PriceUsd",
+        value_type=float,
+    )
+    COIN_VOLUME: Grip[float | None] = REGISTRY.add(
+        "Coin.Volume",
+        value_type=float,
+    )
+    COIN_EXCHANGE: Grip[str] = REGISTRY.add("Coin.Exchange", "")
+    COIN_STATUS: Grip[str] = REGISTRY.add("Coin.Status", "idle")
+    COIN_UPDATED_AT: Grip[datetime | None] = REGISTRY.add(
+        "Coin.UpdatedAt",
+        value_type=datetime,
+    )

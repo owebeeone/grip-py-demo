@@ -23,7 +23,12 @@ class RuntimeBridge(QObject):
         self._subscribe_all()
 
     def _subscribe(self, grip, ctx) -> None:
-        ctx_id = ctx.id
+        consumer_ctx = (
+            ctx.get_grip_consumer_context()
+            if hasattr(ctx, "get_grip_consumer_context")
+            else ctx
+        )
+        ctx_id = consumer_ctx.id
         grip_key = grip.key
         key = (ctx_id, grip_key)
         drip = self._runtime.get_or_create_drip(grip, ctx=ctx)
@@ -76,8 +81,21 @@ class RuntimeBridge(QObject):
             ):
                 self._subscribe(grip, ctx)
 
+        for ctx in self._runtime.coin_contexts.values():
+            for grip in (
+                self._runtime.coin_grips.COIN_SOURCE,
+                self._runtime.coin_grips.COIN_PRODUCT,
+                self._runtime.coin_grips.COIN_PRICE_USD,
+                self._runtime.coin_grips.COIN_VOLUME,
+                self._runtime.coin_grips.COIN_EXCHANGE,
+                self._runtime.coin_grips.COIN_STATUS,
+                self._runtime.coin_grips.COIN_UPDATED_AT,
+            ):
+                self._subscribe(grip, ctx)
+
     def dispose(self) -> None:
         for unsubscribe in self._unsubscribers:
             unsubscribe()
         self._unsubscribers.clear()
         self._drips.clear()
+        self._runtime.close()

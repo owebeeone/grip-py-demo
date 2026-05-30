@@ -10,6 +10,7 @@ from grip_py import (
     Drip,
     GripContext,
     Grok,
+    MatchingContext,
     QueryBinding,
     TapMatcher,
     create_atom_value_tap,
@@ -17,7 +18,13 @@ from grip_py import (
 )
 
 from .constants import LOCATION_OPTIONS
-from .grips import DemoGrips, ProviderName, REGISTRY, TabName, WeatherGrips
+from .cointaps import (
+    COIN_PRODUCTS,
+    COIN_SOURCES,
+    MockCoinTapFactory,
+    UnavailableCoinTapFactory,
+)
+from .grips import CoinGrips, CoinSource, DemoGrips, ProviderName, REGISTRY, TabName, WeatherGrips
 from .openmeteo_taps import LocationToGeoTap, OpenMeteoWeatherTap
 from .taps import CalculatorTap, ClockTap, FormulaWeatherTap
 
@@ -35,6 +42,17 @@ class WeatherSnapshot:
     uv_index: float | None
 
 
+@dataclass(frozen=True, slots=True)
+class CoinSnapshot:
+    source: CoinSource
+    product: str
+    price_usd: float | None
+    volume: float | None
+    exchange: str
+    status: str
+    updated_at: datetime | None
+
+
 class DemoRuntime:
     """High-level API around grip-py runtime used by tests and UI."""
 
@@ -44,6 +62,7 @@ class DemoRuntime:
         self.registry = REGISTRY
         self.grips = DemoGrips
         self.weather_grips = WeatherGrips
+        self.coin_grips = CoinGrips
         self.grok = Grok(self.registry)
         self._drips: dict[tuple[str, str], Drip[Any]] = {}
 
@@ -113,16 +132,66 @@ class DemoRuntime:
         self.column_contexts["A"].register_tap(self.location_taps["A"])
         self.column_contexts["B"].register_tap(self.location_taps["B"])
 
+        self.coin_products = COIN_PRODUCTS
+        self.coin_sources = COIN_SOURCES
+        self.coin_contexts: dict[str, MatchingContext] = {}
+        self.coin_source_taps = {}
+        self.coin_product_taps = {}
+        self._configure_coin_context("A", initial_product="BTC-USD")
+        self._configure_coin_context("B", initial_product="ETH-USD")
+
+    def _configure_coin_context(self, column: str, *, initial_product: str) -> None:
+        def init(ctx: MatchingContext) -> None:
+            ctx.add_binding(
+                QueryBinding(
+                    id=f"coin-{column}-mock",
+                    query=with_one_of(self.coin_grips.COIN_SOURCE, "mock").build(),
+                    tap=MockCoinTapFactory(self.coin_grips),
+                    base_score=5,
+                )
+            )
+            ctx.add_binding(
+                QueryBinding(
+                    id=f"coin-{column}-coinbase",
+                    query=with_one_of(self.coin_grips.COIN_SOURCE, "coinbase").build(),
+                    tap=UnavailableCoinTapFactory(self.coin_grips, exchange="Coinbase"),
+                    base_score=5,
+                )
+            )
+            ctx.add_binding(
+                QueryBinding(
+                    id=f"coin-{column}-binance",
+                    query=with_one_of(self.coin_grips.COIN_SOURCE, "binance").build(),
+                    tap=UnavailableCoinTapFactory(self.coin_grips, exchange="Binance"),
+                    base_score=5,
+                )
+            )
+
+        ctx = self.main_context.get_or_create_matching_context(f"coin:{column}", init=init)
+        home = ctx.get_grip_home_context()
+        source_tap = create_atom_value_tap(self.coin_grips.COIN_SOURCE, initial="mock")
+        product_tap = create_atom_value_tap(self.coin_grips.COIN_PRODUCT, initial=initial_product)
+        home.register_tap(source_tap)
+        home.register_tap(product_tap)
+        self.coin_contexts[column] = ctx
+        self.coin_source_taps[column] = source_tap
+        self.coin_product_taps[column] = product_tap
+
     def _read(self, grip: Any, *, ctx: GripContext | None = None) -> Any:
         return self.get_or_create_drip(grip, ctx=ctx).get()
 
-    def get_or_create_drip(self, grip: Any, *, ctx: GripContext | None = None) -> Drip[Any]:
-        context = ctx or self.main_context
+    def get_or_create_drip(self, grip: Any, *, ctx: Any | None = None) -> Drip[Any]:
+        context_like = ctx or self.main_context
+        context = (
+            context_like.get_grip_consumer_context()
+            if hasattr(context_like, "get_grip_consumer_context")
+            else context_like
+        )
         key = (context.id, grip.key)
         existing = self._drips.get(key)
         if existing is not None:
             return existing
-        created = self.grok.query(grip, context)
+        created = self.grok.query(grip, context_like)
         self._drips[key] = created
         return created
 
@@ -150,10 +219,10 @@ class DemoRuntime:
 
     def get_tab(self) -> TabName:
         tab = str(self._read(self.grips.CURRENT_TAB) or "clock")
-        return tab if tab in {"clock", "calc", "weather"} else "clock"
+        return tab if tab in {"clock", "calc", "weather", "coins"} else "clock"
 
     def set_tab(self, tab: TabName) -> None:
-        if tab not in {"clock", "calc", "weather"}:
+        if tab not in {"clock", "calc", "weather", "coins"}:
             raise ValueError(f"unsupported tab: {tab}")
         self.tab_tap.set(tab)
 
@@ -230,6 +299,49 @@ class DemoRuntime:
             uv_index=_to_float(self._read(self.weather_grips.WEATHER_UV_INDEX, ctx=context)),
         )
 
+    def _coin_context(self, column: str) -> MatchingContext:
+        key = column.upper()
+        if key not in self.coin_contexts:
+            raise ValueError(f"unsupported coin column: {column}")
+        return self.coin_contexts[key]
+
+    def get_coin_source(self, column: str) -> CoinSource:
+        context = self._coin_context(column)
+        source = str(self._read(self.coin_grips.COIN_SOURCE, ctx=context) or "mock")
+        return source if source in {"mock", "coinbase", "binance"} else "mock"
+
+    def set_coin_source(self, column: str, source: CoinSource) -> None:
+        key = column.upper()
+        if source not in {"mock", "coinbase", "binance"}:
+            raise ValueError(f"unsupported coin source: {source}")
+        if key not in self.coin_source_taps:
+            raise ValueError(f"unsupported coin column: {column}")
+        self.coin_source_taps[key].set(source)
+
+    def get_coin_product(self, column: str) -> str:
+        context = self._coin_context(column)
+        return str(self._read(self.coin_grips.COIN_PRODUCT, ctx=context) or "")
+
+    def set_coin_product(self, column: str, product: str) -> None:
+        key = column.upper()
+        if product not in self.coin_products:
+            raise ValueError(f"unsupported coin product: {product}")
+        if key not in self.coin_product_taps:
+            raise ValueError(f"unsupported coin column: {column}")
+        self.coin_product_taps[key].set(product)
+
+    def get_coin_snapshot(self, column: str) -> CoinSnapshot:
+        context = self._coin_context(column)
+        return CoinSnapshot(
+            source=self.get_coin_source(column),
+            product=self.get_coin_product(column),
+            price_usd=_to_float(self._read(self.coin_grips.COIN_PRICE_USD, ctx=context)),
+            volume=_to_float(self._read(self.coin_grips.COIN_VOLUME, ctx=context)),
+            exchange=str(self._read(self.coin_grips.COIN_EXCHANGE, ctx=context) or ""),
+            status=str(self._read(self.coin_grips.COIN_STATUS, ctx=context) or "idle"),
+            updated_at=_to_datetime(self._read(self.coin_grips.COIN_UPDATED_AT, ctx=context)),
+        )
+
     def tick_clock(self, seconds: int = 1) -> None:
         self.clock_tap.tick(seconds)
 
@@ -239,9 +351,18 @@ class DemoRuntime:
         self.meteo_weather_tap.produce()
         self.mock_weather_tap.tick(step)
 
+    def tick_coins(self) -> None:
+        for column in self.coin_contexts:
+            self.get_coin_snapshot(column)
+
     def tick(self) -> None:
         self.tick_clock(1)
         self.tick_weather(1)
+        self.tick_coins()
+
+    def close(self) -> None:
+        """Release runtime graph resources and active stream tasks."""
+        self.grok.close()
 
 
 def _to_int(value: Any) -> int | None:
@@ -254,3 +375,7 @@ def _to_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _to_datetime(value: Any) -> datetime | None:
+    return value if isinstance(value, datetime) else None

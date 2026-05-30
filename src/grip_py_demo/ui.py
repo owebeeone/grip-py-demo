@@ -17,7 +17,80 @@ from PySide6.QtWidgets import (
 )
 
 from .controller import RuntimeBridge
-from .demo_runtime import DemoRuntime, WeatherSnapshot
+from .demo_runtime import CoinSnapshot, DemoRuntime, WeatherSnapshot
+
+
+class CoinColumnWidget(QWidget):
+    """Single coin stream destination view."""
+
+    def __init__(self, runtime: DemoRuntime, column: str, title: str):
+        super().__init__()
+        self._runtime = runtime
+        self._column = column
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.addWidget(QLabel(title))
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["mock", "coinbase", "binance"])
+        self.source_combo.currentTextChanged.connect(self._on_source_changed)
+        header.addWidget(self.source_combo)
+        self.product_combo = QComboBox()
+        self.product_combo.addItems(list(runtime.coin_products))
+        self.product_combo.currentTextChanged.connect(self._on_product_changed)
+        header.addWidget(self.product_combo)
+        layout.addLayout(header)
+
+        self.feed_label = QLabel("Feed: -")
+        layout.addWidget(self.feed_label)
+
+        metrics_grid = QGridLayout()
+        self.value_labels: dict[str, QLabel] = {}
+        rows = [
+            ("Price", "price"),
+            ("Volume", "volume"),
+            ("Status", "status"),
+            ("Updated", "updated"),
+        ]
+        for row_index, (label, key) in enumerate(rows):
+            metrics_grid.addWidget(QLabel(label), row_index, 0)
+            value = QLabel("-")
+            metrics_grid.addWidget(value, row_index, 1)
+            self.value_labels[key] = value
+        layout.addLayout(metrics_grid)
+
+        self.setStyleSheet(
+            "QWidget { border: 1px solid #ddd; border-radius: 6px; }"
+            "QLabel { border: none; }"
+        )
+
+    def _on_source_changed(self, source: str) -> None:
+        self._runtime.set_coin_source(self._column, source)  # type: ignore[arg-type]
+
+    def _on_product_changed(self, product: str) -> None:
+        self._runtime.set_coin_product(self._column, product)
+
+    def set_snapshot(self, snapshot: CoinSnapshot) -> None:
+        self._set_combo_value(self.source_combo, snapshot.source)
+        self._set_combo_value(self.product_combo, snapshot.product)
+        self.feed_label.setText(f"Feed: {snapshot.exchange or '-'}")
+        self.value_labels["price"].setText(_fmt_money(snapshot.price_usd))
+        self.value_labels["volume"].setText(_fmt(snapshot.volume))
+        self.value_labels["status"].setText(snapshot.status or "idle")
+        self.value_labels["updated"].setText(
+            snapshot.updated_at.strftime("%H:%M:%S") if snapshot.updated_at else "-"
+        )
+
+    @staticmethod
+    def _set_combo_value(combo: QComboBox, value: str) -> None:
+        index = combo.findText(value)
+        if index >= 0 and combo.currentIndex() != index:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
 
 
 class WeatherColumnWidget(QWidget):
@@ -122,9 +195,12 @@ class MainWindow(QWidget):
         self.calc_tab_button.clicked.connect(lambda: self._runtime.set_tab("calc"))
         self.weather_tab_button = QPushButton("Weather")
         self.weather_tab_button.clicked.connect(lambda: self._runtime.set_tab("weather"))
+        self.coins_tab_button = QPushButton("Coins")
+        self.coins_tab_button.clicked.connect(lambda: self._runtime.set_tab("coins"))
         tabs.addWidget(self.clock_tab_button)
         tabs.addWidget(self.calc_tab_button)
         tabs.addWidget(self.weather_tab_button)
+        tabs.addWidget(self.coins_tab_button)
         tabs.addStretch(1)
         self.exit_button = QPushButton("Exit")
         self.exit_button.clicked.connect(self.close)
@@ -135,9 +211,11 @@ class MainWindow(QWidget):
         self.clock_page = self._build_clock_page()
         self.calc_page = self._build_calc_page()
         self.weather_page = self._build_weather_page()
+        self.coins_page = self._build_coins_page()
         self.stack.addWidget(self.clock_page)
         self.stack.addWidget(self.calc_page)
         self.stack.addWidget(self.weather_page)
+        self.stack.addWidget(self.coins_page)
         root.addWidget(self.stack)
 
         self._configure_handlers()
@@ -177,6 +255,20 @@ class MainWindow(QWidget):
         layout.addWidget(self.page_size_label)
         layout.addLayout(counter_row)
         layout.addWidget(self.description_label)
+        layout.addStretch(1)
+        return page
+
+    def _build_coins_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(10)
+
+        columns = QHBoxLayout()
+        self.coin_column_a = CoinColumnWidget(self._runtime, "A", "Market A")
+        self.coin_column_b = CoinColumnWidget(self._runtime, "B", "Market B")
+        columns.addWidget(self.coin_column_a)
+        columns.addWidget(self.coin_column_b)
+        layout.addLayout(columns)
         layout.addStretch(1)
         return page
 
@@ -285,6 +377,20 @@ class MainWindow(QWidget):
             ):
                 self._bind(column_ctx, grip, updater)
 
+        for column_name, column_ctx in self._runtime.coin_contexts.items():
+            consumer_ctx = column_ctx.get_grip_consumer_context()
+            updater = lambda current_column=column_name: self._update_coin_column(current_column)
+            for grip in (
+                self._runtime.coin_grips.COIN_SOURCE,
+                self._runtime.coin_grips.COIN_PRODUCT,
+                self._runtime.coin_grips.COIN_PRICE_USD,
+                self._runtime.coin_grips.COIN_VOLUME,
+                self._runtime.coin_grips.COIN_EXCHANGE,
+                self._runtime.coin_grips.COIN_STATUS,
+                self._runtime.coin_grips.COIN_UPDATED_AT,
+            ):
+                self._bind(consumer_ctx, grip, updater)
+
     def _on_grip_changed(self, ctx_id: str, grip_key: str) -> None:
         handlers = self._handlers.get((ctx_id, grip_key), ())
         for handler in handlers:
@@ -292,11 +398,12 @@ class MainWindow(QWidget):
 
     def _update_tab_controls(self) -> None:
         tab = self._runtime.get_tab()
-        tab_index = {"clock": 0, "calc": 1, "weather": 2}[tab]
+        tab_index = {"clock": 0, "calc": 1, "weather": 2, "coins": 3}[tab]
         self.stack.setCurrentIndex(tab_index)
         self.clock_tab_button.setDisabled(tab == "clock")
         self.calc_tab_button.setDisabled(tab == "calc")
         self.weather_tab_button.setDisabled(tab == "weather")
+        self.coins_tab_button.setDisabled(tab == "coins")
 
     def _update_header_temp(self) -> None:
         header_temp = self._runtime.get_header_temp()
@@ -343,6 +450,13 @@ class MainWindow(QWidget):
         self.column_b.set_location(location)
         self.column_b.set_snapshot(snapshot)
 
+    def _update_coin_column(self, column: str) -> None:
+        snapshot = self._runtime.get_coin_snapshot(column)
+        if column == "A":
+            self.coin_column_a.set_snapshot(snapshot)
+            return
+        self.coin_column_b.set_snapshot(snapshot)
+
     def render(self) -> None:
         self._update_tab_controls()
         self._update_header_temp()
@@ -353,6 +467,8 @@ class MainWindow(QWidget):
         self._update_provider()
         self._update_weather_column("A")
         self._update_weather_column("B")
+        self._update_coin_column("A")
+        self._update_coin_column("B")
 
     def closeEvent(self, event):  # type: ignore[override]
         self._timer.stop()
@@ -366,3 +482,10 @@ def _fmt(value) -> str:
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
+
+
+def _fmt_money(value) -> str:
+    if value is None:
+        return "-"
+    decimals = 6 if value < 1 else 2
+    return f"${value:,.{decimals}f}"

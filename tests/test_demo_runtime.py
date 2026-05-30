@@ -1,7 +1,7 @@
 import time
 
 from grip_py_demo.demo_runtime import DemoRuntime
-from grip_py_demo.grips import DemoGrips, REGISTRY, WeatherGrips
+from grip_py_demo.grips import CoinGrips, DemoGrips, REGISTRY, WeatherGrips
 
 
 def _wait_until(predicate, timeout_s: float = 1.0) -> None:
@@ -23,6 +23,8 @@ def test_grip_catalog_uses_upper_case_constant_names() -> None:
     assert not hasattr(WeatherGrips, "weather_temp_c")
     assert hasattr(WeatherGrips, "GEO_LABEL")
     assert not hasattr(WeatherGrips, "geo_label")
+    assert hasattr(CoinGrips, "COIN_PRICE_USD")
+    assert not hasattr(CoinGrips, "coin_price_usd")
 
 
 def test_grip_catalog_is_class_level_constants() -> None:
@@ -31,6 +33,7 @@ def test_grip_catalog_is_class_level_constants() -> None:
     assert runtime.registry is REGISTRY
     assert runtime.grips is DemoGrips
     assert runtime.weather_grips is WeatherGrips
+    assert runtime.coin_grips is CoinGrips
 
 
 def test_clock_visibility_follows_counter_parity() -> None:
@@ -208,3 +211,42 @@ def test_meteo_reads_do_not_block_on_slow_network(monkeypatch) -> None:
     elapsed = time.perf_counter() - start
     assert elapsed < 0.1
     assert snapshot.location_label in {"Sydney", ""}
+
+
+def test_coin_stream_contexts_are_independent_and_provider_selectable() -> None:
+    runtime = DemoRuntime()
+
+    runtime.set_tab("coins")
+    assert runtime.get_tab() == "coins"
+
+    initial_a = runtime.get_coin_snapshot("A")
+    initial_b = runtime.get_coin_snapshot("B")
+    assert initial_a.product == "BTC-USD"
+    assert initial_b.product == "ETH-USD"
+    assert initial_a.source == "mock"
+    assert initial_b.source == "mock"
+
+    _wait_until(
+        lambda: (
+            runtime.tick_coins() is None
+            and runtime.get_coin_snapshot("A").price_usd is not None
+            and runtime.get_coin_snapshot("B").price_usd is not None
+        )
+    )
+
+    runtime.set_coin_product("A", "SOL-USD")
+    runtime.tick_coins()
+    assert runtime.get_coin_snapshot("A").product == "SOL-USD"
+    assert runtime.get_coin_snapshot("B").product == "ETH-USD"
+
+    runtime.set_coin_source("B", "binance")
+    _wait_until(
+        lambda: (
+            runtime.tick_coins() is None
+            and runtime.get_coin_snapshot("B").exchange == "Binance"
+        )
+    )
+    binance_b = runtime.get_coin_snapshot("B")
+    assert binance_b.source == "binance"
+    assert binance_b.exchange == "Binance"
+    assert binance_b.status == "unavailable"
